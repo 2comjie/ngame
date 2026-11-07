@@ -8,6 +8,7 @@ import (
 
 type options struct {
 	listeners        []transport.Listener
+	dialer           transport.Dialer
 	auther           Auther
 	onSessionBind    func(*Session)
 	onSessionEnd     func(*Session)
@@ -22,6 +23,7 @@ type options struct {
 	maxUnbound       int
 	acceptWorkers    int
 	maxBody          int
+	maxPending       int
 }
 
 type Option func(*options)
@@ -29,12 +31,16 @@ type Option func(*options)
 func defaultOptions() options {
 	return options{
 		bindTimeout: 5 * time.Second, heartbeat: 30 * time.Second, heartbeatTimeout: 90 * time.Second,
-		requestTimeout: 30 * time.Second, requestQueue: 128, maxUnbound: 128, acceptWorkers: 8, maxBody: 8 << 20,
+		requestTimeout: 30 * time.Second, requestQueue: 128, maxUnbound: 128, acceptWorkers: 8, maxBody: 8 << 20, maxPending: 1024,
 	}
 }
 
 func WithListener(listener transport.Listener) Option {
 	return func(o *options) { o.listeners = append(o.listeners, listener) }
+}
+
+func WithDialer(dialer transport.Dialer) Option {
+	return func(o *options) { o.dialer = dialer }
 }
 
 func WithAuther(auther Auther) Option {
@@ -92,4 +98,8 @@ func WithAcceptWorkers(count int) Option {
 
 func WithMaxBody(size int) Option {
 	return func(o *options) { o.maxBody = size }
+}
+
+func WithMaxPending(count int) Option {
+	return func(o *options) { o.maxPending = count }
 }
