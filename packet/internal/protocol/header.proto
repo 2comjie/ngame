@@ -1,0 +1,9 @@
+syntax = "proto3";
+
+package ngame.packet;
+
+option go_package = "github.com/2comjie/ngame/packet/internal/protocol;protocol";
+
+message HeaderValues {
+  map<string, string> values = 1;
+}
