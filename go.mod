@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	github.com/2comjie/ntool v0.1.4
+	github.com/gorilla/websocket v1.5.3
 	github.com/spf13/cast v1.10.0
 	github.com/xtaci/kcp-go/v5 v5.6.72
 	google.golang.org/protobuf v1.36.12

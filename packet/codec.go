@@ -49,6 +49,9 @@ func NewCodec(maxFrame uint32) *Codec {
 	return &Codec{maxFrame: maxFrame}
 }
 
+// MaxFrameSize 返回包含固定帧头的整包长度上限，供传输层设置消息大小限制。
+func (c *Codec) MaxFrameSize() uint32 { return c.maxFrame }
+
 // Read 从流中读取一个包，不读取后续包。返回的消息使用完后必须 Release。
 // 协议错误后调用方应关闭连接，不应继续尝试解析这个流。
 func (c *Codec) Read(r io.Reader) (*Message, error) {
