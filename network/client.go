@@ -14,7 +14,15 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// PushHandler 在独立协程中按接收顺序串行执行，可以同步调用Call。
+// 消息独立持有Header和Body，可由回调保留；回调应响应ctx取消。
 type PushHandler func(context.Context, *packet.Message)
+
+type queuedPush struct {
+	handler PushHandler
+	message *packet.Message
+	size    int
+}
 
 type pendingCall struct {
 	route uint32
@@ -39,6 +47,8 @@ type Client struct {
 	pingNonce   uint64
 	pingAt      time.Time
 	pong        chan uint64
+	pushes      chan queuedPush
+	pushBytes   int
 }
 
 func NewClient(opts ...Option) *Client {
@@ -52,9 +62,12 @@ func NewClient(opts ...Option) *Client {
 	if o.bindTimeout <= 0 || o.heartbeatTimeout <= 0 || o.maxBody <= 0 || o.maxPending <= 0 {
 		panic("network: 连接、心跳超时及Body、请求数上限必须大于0")
 	}
+	if o.pushQueue <= 0 || o.maxPushBytes <= 0 {
+		panic("network: 推送队列数量和字节上限必须大于0")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Client{options: o, ctx: ctx, cancel: cancel, pending: make(map[uint64]*pendingCall),
-		pushHandler: make(map[uint32]PushHandler), pong: make(chan uint64, 1)}
+		pushHandler: make(map[uint32]PushHandler), pong: make(chan uint64, 1), pushes: make(chan queuedPush, o.pushQueue)}
 }
 
 // Connect 在ctx和WithBindTimeout的限制内完成连接和凭证认证。
@@ -108,6 +121,7 @@ func (c *Client) Connect(ctx context.Context, ticket []byte) error {
 	}
 	c.conn, c.bindWait = conn, wait
 	c.mutex.Unlock()
+	go c.pushLoop()
 	if err := conn.Start(c); err != nil {
 		return err
 	}
@@ -240,6 +254,7 @@ func (c *Client) Tell(ctx context.Context, request *packet.Message) error {
 }
 
 // OnPush 注册路由对应的推送回调；handler为nil时取消注册。
+// 已入队推送使用接收时注册的回调，不受之后替换或取消注册的影响。
 func (c *Client) OnPush(route uint32, handler PushHandler) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
@@ -320,9 +335,31 @@ func (c *Client) HandleMessage(conn transport.Conn, message *packet.Message) {
 		c.mutex.Lock()
 		handler := c.pushHandler[message.Header.Route]
 		c.mutex.Unlock()
-		if handler != nil {
-			handler(c.ctx, message)
+		if handler == nil {
+			return
 		}
+		size := packet.HeaderSize + len(message.Body)
+		for key, value := range message.Header.Values {
+			size += len(key) + len(value)
+		}
+		owned := &packet.Message{Header: packet.Header{Type: message.Header.Type, Route: message.Header.Route,
+			Seq: message.Header.Seq, Values: maps.Clone(message.Header.Values)}, Body: bytes.Clone(message.Body)}
+		c.mutex.Lock()
+		if c.closed {
+			c.mutex.Unlock()
+			return
+		}
+		if size <= c.options.maxPushBytes-c.pushBytes {
+			select {
+			case c.pushes <- queuedPush{handler: handler, message: owned, size: size}:
+				c.pushBytes += size
+				c.mutex.Unlock()
+				return
+			default:
+			}
+		}
+		c.mutex.Unlock()
+		_ = c.Close()
 	case packet.Ping:
 		if err := conn.WriteContext(c.ctx, &packet.Message{Header: packet.Header{Type: packet.Pong}, Body: message.Body}); err != nil {
 			_ = c.Close()
@@ -347,6 +384,24 @@ func (c *Client) HandleMessage(conn transport.Conn, message *packet.Message) {
 }
 
 func (c *Client) HandleClose(transport.Conn) { _ = c.Close() }
+
+func (c *Client) pushLoop() {
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case push := <-c.pushes:
+			c.mutex.Lock()
+			c.pushBytes -= push.size
+			closed := c.closed
+			c.mutex.Unlock()
+			if closed {
+				return
+			}
+			push.handler(c.ctx, push.message)
+		}
+	}
+}
 
 func (c *Client) heartbeatLoop(interval time.Duration) {
 	timer := time.NewTimer(interval)
@@ -409,11 +464,19 @@ func (c *Client) Close() error {
 	c.conn, c.bindWait = nil, nil
 	clear(c.pending)
 	c.cancel()
-	c.mutex.Unlock()
-	if conn != nil {
-		return conn.Close()
+	// 与入队共用mutex，关闭时释放尚未执行的消息；正在执行的回调通过ctx取消。
+	for {
+		select {
+		case push := <-c.pushes:
+			c.pushBytes -= push.size
+		default:
+			c.mutex.Unlock()
+			if conn != nil {
+				return conn.Close()
+			}
+			return nil
+		}
 	}
-	return nil
 }
 
 func (c *Client) Done() <-chan struct{} { return c.ctx.Done() }

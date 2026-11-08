@@ -24,6 +24,8 @@ type options struct {
 	acceptWorkers    int
 	maxBody          int
 	maxPending       int
+	pushQueue        int
+	maxPushBytes     int
 }
 
 type Option func(*options)
@@ -32,6 +34,7 @@ func defaultOptions() options {
 	return options{
 		bindTimeout: 5 * time.Second, heartbeat: 30 * time.Second, heartbeatTimeout: 90 * time.Second,
 		requestTimeout: 30 * time.Second, requestQueue: 128, maxUnbound: 128, acceptWorkers: 8, maxBody: 8 << 20, maxPending: 1024,
+		pushQueue: 128, maxPushBytes: 16 << 20,
 	}
 }
 
@@ -102,4 +105,10 @@ func WithMaxBody(size int) Option {
 
 func WithMaxPending(count int) Option {
 	return func(o *options) { o.maxPending = count }
+}
+
+// WithPushQueue 设置客户端待处理推送的数量和数据字节上限，默认128条、16MiB。
+// 字节统计包含固定帧头、解码后的Body及Header键值；队列满时关闭连接，不丢弃推送后继续运行。
+func WithPushQueue(capacity, maxBytes int) Option {
+	return func(o *options) { o.pushQueue, o.maxPushBytes = capacity, maxBytes }
 }
