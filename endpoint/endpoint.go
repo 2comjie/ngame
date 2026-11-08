@@ -27,6 +27,19 @@ type ServiceInst struct {
 	Meta    map[string]string `json:"meta"`     // 业务元数据，例如区服、版本。
 }
 
+// Validate 检查必需的注册配置，配置错误时直接 panic。
+func (s ServiceInst) Validate() {
+	if s.Id == "" || s.Name == "" || s.RpcHost == "" || s.RpcPort <= 0 || s.RpcPort > 65535 {
+		panic("endpoint: 必须提供实例 Id、服务名和有效 RPC 地址")
+	}
+	if ip := net.ParseIP(s.RpcHost); ip != nil && ip.IsUnspecified() {
+		panic("endpoint: RPC 地址不能使用通配监听地址")
+	}
+	if s.Weight < 0 || (s.Status != Working && s.Status != Hung && s.Status != Shutdown) {
+		panic("endpoint: 实例状态或权重无效")
+	}
+}
+
 // RpcTarget 返回供 RPC 客户端连接的 host:port，支持 IPv6 地址。
 func (s ServiceInst) RpcTarget() string {
 	return net.JoinHostPort(s.RpcHost, cast.ToString(s.RpcPort))
