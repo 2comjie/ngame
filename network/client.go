@@ -57,7 +57,8 @@ func NewClient(opts ...Option) *Client {
 		pushHandler: make(map[uint32]PushHandler), pong: make(chan uint64, 1)}
 }
 
-// Connect 在 ctx 和 WithBindTimeout 的限制内完成安全连接和凭证认证。
+// Connect 在ctx和WithBindTimeout的限制内完成连接和凭证认证。
+// 公网连接必须使用TLS；显式配置的明文连接只能访问本机回环地址。
 // ticket 通过首包 Header.Values["authorization"] 发送，认证成功后才返回 nil。
 func (c *Client) Connect(ctx context.Context, ticket []byte) error {
 	if len(ticket) == 0 || len(ticket) > maxTokenSize {
@@ -94,7 +95,7 @@ func (c *Client) Connect(ctx context.Context, ticket []byte) error {
 		}
 		return err
 	}
-	if !conn.Secure() {
+	if !conn.Secure() && !transport.IsLoopback(conn.RemoteAddr()) {
 		_ = conn.Close()
 		return transport.ErrInsecure
 	}

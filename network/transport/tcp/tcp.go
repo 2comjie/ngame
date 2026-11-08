@@ -14,6 +14,7 @@ import (
 
 type options struct {
 	tlsConfig        *tls.Config
+	withoutTLS       bool
 	codec            *packet.Codec
 	handshakeTimeout time.Duration
 	writeTimeout     time.Duration
@@ -29,7 +30,7 @@ func defaultOptions() options {
 	}
 }
 
-// WithTLS 是必需配置，最低使用TLS 1.3。
+// WithTLS 配置TLS，最低使用TLS 1.3，与WithoutTLS互斥。
 func WithTLS(config *tls.Config) Option {
 	return func(o *options) {
 		o.tlsConfig = config.Clone()
@@ -37,6 +38,11 @@ func WithTLS(config *tls.Config) Option {
 			o.tlsConfig.MinVersion = tls.VersionTLS13
 		}
 	}
+}
+
+// WithoutTLS 显式关闭TLS，只允许本机回环地址上的监听和拨号。
+func WithoutTLS() Option {
+	return func(o *options) { o.withoutTLS = true }
 }
 
 func WithCodec(codec *packet.Codec) Option {
@@ -58,13 +64,16 @@ func WithKeepAlive(period time.Duration) Option {
 }
 
 func (o options) validate() {
-	if o.tlsConfig == nil || o.codec == nil {
-		panic("network/tcp: 必须提供TLS配置和Codec")
+	if (o.tlsConfig == nil && !o.withoutTLS) || (o.tlsConfig != nil && o.withoutTLS) {
+		panic("network/tcp: 必须选择WithTLS或WithoutTLS，不能同时配置")
+	}
+	if o.codec == nil {
+		panic("network/tcp: 必须提供Codec")
 	}
 	if o.handshakeTimeout <= 0 || o.writeTimeout <= 0 {
 		panic("network/tcp: 握手和写入超时必须大于0")
 	}
-	if o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
+	if o.tlsConfig != nil && o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
 		panic("network/tcp: TLS版本范围错误")
 	}
 }
@@ -82,7 +91,7 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 		opt(&o)
 	}
 	o.validate()
-	if len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
+	if !o.withoutTLS && len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
 		panic("network/tcp: 服务端必须提供TLS证书")
 	}
 	config := net.ListenConfig{KeepAlive: o.keepAlive}
@@ -90,15 +99,22 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
+	if o.withoutTLS && !transport.IsLoopback(raw.Addr()) {
+		_ = raw.Close()
+		panic("network/tcp: 明文监听只能绑定本机回环地址")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &listener{raw: raw, options: o, ctx: ctx, cancel: cancel}, nil
 }
 
-// Accept 可并发调用，TLS握手成功后才返回消息连接。
+// Accept 可并发调用；TLS模式下握手成功后才返回消息连接。
 func (l *listener) Accept() (transport.Conn, error) {
 	conn, err := l.raw.Accept()
 	if err != nil {
 		return nil, err
+	}
+	if l.options.withoutTLS {
+		return netconn.New(conn, l.options.codec, transport.TypeTCP, l.options.writeTimeout), nil
 	}
 	raw := tls.Server(conn, l.options.tlsConfig)
 	ctx, cancel := context.WithTimeout(l.ctx, l.options.handshakeTimeout)
@@ -131,7 +147,7 @@ func NewDialer(address string, opts ...Option) transport.Dialer {
 		opt(&o)
 	}
 	o.validate()
-	if o.tlsConfig.InsecureSkipVerify {
+	if o.tlsConfig != nil && o.tlsConfig.InsecureSkipVerify {
 		panic("network/tcp: 禁止跳过TLS证书校验")
 	}
 	return &dialer{address: address, options: o}
@@ -140,6 +156,18 @@ func NewDialer(address string, opts ...Option) transport.Dialer {
 func (d *dialer) DialContext(ctx context.Context) (transport.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, d.options.handshakeTimeout)
 	defer cancel()
+	if d.options.withoutTLS {
+		dialer := net.Dialer{KeepAlive: d.options.keepAlive}
+		raw, err := dialer.DialContext(ctx, "tcp", d.address)
+		if err != nil {
+			return nil, err
+		}
+		if !transport.IsLoopback(raw.RemoteAddr()) {
+			_ = raw.Close()
+			return nil, transport.ErrInsecure
+		}
+		return netconn.New(raw, d.options.codec, transport.TypeTCP, d.options.writeTimeout), nil
+	}
 	dialer := tls.Dialer{
 		NetDialer: &net.Dialer{KeepAlive: d.options.keepAlive},
 		Config:    d.options.tlsConfig,

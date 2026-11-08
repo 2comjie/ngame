@@ -14,7 +14,9 @@ import (
 )
 
 type Conn struct {
-	raw       *tls.Conn
+	raw       net.Conn
+	socket    net.Conn
+	secure    bool
 	codec     *packet.Codec
 	kind      transport.Type
 	writeWait time.Duration
@@ -27,12 +29,17 @@ type Conn struct {
 	handler transport.Handler
 }
 
-func New(raw *tls.Conn, codec *packet.Codec, kind transport.Type, writeWait time.Duration) *Conn {
-	if !raw.ConnectionState().HandshakeComplete {
-		panic(transport.ErrInsecure)
+func New(raw net.Conn, codec *packet.Codec, kind transport.Type, writeWait time.Duration) *Conn {
+	socket := raw
+	secure := false
+	if conn, ok := raw.(*tls.Conn); ok {
+		if !conn.ConnectionState().HandshakeComplete {
+			panic(transport.ErrInsecure)
+		}
+		socket, secure = conn.NetConn(), true
 	}
 	return &Conn{
-		raw: raw, codec: codec, kind: kind, writeWait: writeWait,
+		raw: raw, socket: socket, secure: secure, codec: codec, kind: kind, writeWait: writeWait,
 		writeGate: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 }
@@ -121,7 +128,7 @@ func (c *Conn) WriteContext(ctx context.Context, message *packet.Message) error 
 	interrupted := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		// 先关闭底层流打断写入；等写锁释放后再通知 HandleClose。
-		_ = c.raw.NetConn().Close()
+		_ = c.socket.Close()
 		close(interrupted)
 	})
 	data := frame.Bytes()
@@ -156,7 +163,7 @@ func (c *Conn) Close() error {
 	handler := c.handler
 	c.mutex.Unlock()
 	// 直接关闭底层连接，不等待 TLS close_notify，及时打断阻塞的读写。
-	err := c.raw.NetConn().Close()
+	err := c.socket.Close()
 	if handler != nil {
 		handler.HandleClose(c)
 	}
@@ -169,4 +176,4 @@ func (c *Conn) Close() error {
 func (c *Conn) LocalAddr() net.Addr  { return c.raw.LocalAddr() }
 func (c *Conn) RemoteAddr() net.Addr { return c.raw.RemoteAddr() }
 func (c *Conn) Type() transport.Type { return c.kind }
-func (c *Conn) Secure() bool         { return c.raw.ConnectionState().HandshakeComplete }
+func (c *Conn) Secure() bool         { return c.secure }

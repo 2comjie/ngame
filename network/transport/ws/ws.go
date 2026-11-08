@@ -25,6 +25,7 @@ var ErrSubprotocol = errors.New("network/ws: WebSocket子协议错误")
 type options struct {
 	path             string
 	tlsConfig        *tls.Config
+	withoutTLS       bool
 	codec            *packet.Codec
 	handshakeTimeout time.Duration
 	writeTimeout     time.Duration
@@ -50,6 +51,11 @@ func WithTLS(config *tls.Config) Option {
 		}
 		o.tlsConfig.NextProtos = []string{"http/1.1"}
 	}
+}
+
+// WithoutTLS 显式关闭TLS，仅用于本机回环地址上的代理后端或本地调试。
+func WithoutTLS() Option {
+	return func(o *options) { o.withoutTLS = true }
 }
 
 func WithCodec(codec *packet.Codec) Option {
@@ -85,8 +91,11 @@ func WithHeader(header http.Header) Option {
 }
 
 func (o options) validate() {
-	if o.tlsConfig == nil || o.codec == nil {
-		panic("network/ws: 必须提供TLS配置和Codec")
+	if (o.tlsConfig == nil && !o.withoutTLS) || (o.tlsConfig != nil && o.withoutTLS) {
+		panic("network/ws: 必须选择WithTLS或WithoutTLS，不能同时配置")
+	}
+	if o.codec == nil {
+		panic("network/ws: 必须提供Codec")
 	}
 	if o.handshakeTimeout <= 0 || o.writeTimeout <= 0 {
 		panic("network/ws: 握手和写入超时必须大于0")
@@ -94,7 +103,7 @@ func (o options) validate() {
 	if o.path == "" || o.path[0] != '/' {
 		panic("network/ws: path必须以/开头")
 	}
-	if o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
+	if o.tlsConfig != nil && o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
 		panic("network/ws: TLS版本范围错误")
 	}
 }
@@ -115,7 +124,11 @@ func (o options) checkOrigin(request *http.Request) bool {
 		_, allowed := o.origins[strings.ToLower(values[0])]
 		return allowed
 	}
-	return origin.Scheme == "https" && strings.EqualFold(origin.Host, request.Host)
+	scheme := "https"
+	if o.withoutTLS {
+		scheme = "http"
+	}
+	return origin.Scheme == scheme && strings.EqualFold(origin.Host, request.Host)
 }
 
 type listener struct {
@@ -135,18 +148,26 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 		opt(&o)
 	}
 	o.validate()
-	if len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
+	if !o.withoutTLS && len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
 		panic("network/ws: 服务端必须提供TLS证书")
 	}
 	raw, err := net.Listen("tcp", address)
 	if err != nil {
 		return nil, err
 	}
+	if o.withoutTLS && !transport.IsLoopback(raw.Addr()) {
+		_ = raw.Close()
+		panic("network/ws: 明文监听只能绑定本机回环地址")
+	}
 	l := &listener{raw: raw, options: o, accepts: make(chan *conn, 128), done: make(chan struct{}),
 		upgrader: websocket.Upgrader{HandshakeTimeout: o.handshakeTimeout, Subprotocols: []string{Subprotocol}, CheckOrigin: o.checkOrigin}}
 	l.server = &http.Server{Handler: l, ReadHeaderTimeout: o.handshakeTimeout, WriteTimeout: o.handshakeTimeout, IdleTimeout: o.handshakeTimeout}
 	go func() {
-		if err := l.server.Serve(tls.NewListener(raw, o.tlsConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		var serving net.Listener = raw
+		if !o.withoutTLS {
+			serving = tls.NewListener(raw, o.tlsConfig)
+		}
+		if err := l.server.Serve(serving); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			slog.Error("network/ws: 监听失败", "error", err)
 			_ = l.Close()
 		}
@@ -235,12 +256,16 @@ func NewDialer(address string, opts ...Option) transport.Dialer {
 		opt(&o)
 	}
 	o.validate()
-	if o.tlsConfig.InsecureSkipVerify {
+	if o.tlsConfig != nil && o.tlsConfig.InsecureSkipVerify {
 		panic("network/ws: 禁止跳过TLS证书校验")
 	}
 	parsed, err := url.Parse(address)
-	if err != nil || parsed.Scheme != "wss" || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
-		panic("network/ws: 必须提供有效的wss地址")
+	scheme := "wss"
+	if o.withoutTLS {
+		scheme = "ws"
+	}
+	if err != nil || parsed.Scheme != scheme || parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+		panic("network/ws: 地址协议必须与TLS配置一致")
 	}
 	if parsed.Path == "" || parsed.Path == "/" {
 		parsed.Path = o.path
@@ -250,6 +275,20 @@ func NewDialer(address string, opts ...Option) transport.Dialer {
 
 func (d *dialer) DialContext(ctx context.Context) (transport.Conn, error) {
 	dialer := websocket.Dialer{TLSClientConfig: d.options.tlsConfig, HandshakeTimeout: d.options.handshakeTimeout, Subprotocols: []string{Subprotocol}}
+	if d.options.withoutTLS {
+		dialer.NetDialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+			var dialer net.Dialer
+			raw, err := dialer.DialContext(ctx, network, address)
+			if err != nil {
+				return nil, err
+			}
+			if !transport.IsLoopback(raw.RemoteAddr()) {
+				_ = raw.Close()
+				return nil, transport.ErrInsecure
+			}
+			return raw, nil
+		}
+	}
 	raw, response, err := dialer.DialContext(ctx, d.address, d.options.header)
 	if err != nil {
 		if response != nil {
@@ -258,7 +297,7 @@ func (d *dialer) DialContext(ctx context.Context) (transport.Conn, error) {
 		return nil, err
 	}
 	if raw.Subprotocol() != Subprotocol {
-		_ = raw.NetConn().(*tls.Conn).NetConn().Close()
+		_ = raw.Close()
 		return nil, ErrSubprotocol
 	}
 	return newConn(raw, d.options), nil

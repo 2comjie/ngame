@@ -17,7 +17,8 @@ import (
 // 每条WebSocket二进制消息恰好承载一个完整packet，允许WebSocket层自行分片。
 type conn struct {
 	raw       *websocket.Conn
-	tls       *tls.Conn
+	socket    net.Conn
+	secure    bool
 	codec     *packet.Codec
 	writeWait time.Duration
 	writeGate chan struct{}
@@ -30,12 +31,16 @@ type conn struct {
 }
 
 func newConn(raw *websocket.Conn, o options) *conn {
-	secure := raw.NetConn().(*tls.Conn)
-	if !secure.ConnectionState().HandshakeComplete {
-		panic(transport.ErrInsecure)
+	socket := raw.NetConn()
+	secure := false
+	if conn, ok := socket.(*tls.Conn); ok {
+		if !conn.ConnectionState().HandshakeComplete {
+			panic(transport.ErrInsecure)
+		}
+		socket, secure = conn.NetConn(), true
 	}
 	raw.SetReadLimit(int64(o.codec.MaxFrameSize()))
-	return &conn{raw: raw, tls: secure, codec: o.codec, writeWait: o.writeTimeout,
+	return &conn{raw: raw, socket: socket, secure: secure, codec: o.codec, writeWait: o.writeTimeout,
 		writeGate: make(chan struct{}, 1), done: make(chan struct{})}
 }
 
@@ -131,7 +136,7 @@ func (c *conn) WriteContext(ctx context.Context, message *packet.Message) error 
 	}
 	interrupted := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
-		_ = c.tls.NetConn().Close()
+		_ = c.socket.Close()
 		close(interrupted)
 	})
 	err = c.raw.WriteMessage(websocket.BinaryMessage, frame.Bytes())
@@ -161,7 +166,7 @@ func (c *conn) Close() error {
 	close(c.done)
 	handler := c.handler
 	c.mutex.Unlock()
-	err := c.tls.NetConn().Close()
+	err := c.socket.Close()
 	if handler != nil {
 		handler.HandleClose(c)
 	}
@@ -174,4 +179,4 @@ func (c *conn) Close() error {
 func (c *conn) LocalAddr() net.Addr  { return c.raw.LocalAddr() }
 func (c *conn) RemoteAddr() net.Addr { return c.raw.RemoteAddr() }
 func (c *conn) Type() transport.Type { return transport.TypeWS }
-func (c *conn) Secure() bool         { return c.tls.ConnectionState().HandshakeComplete }
+func (c *conn) Secure() bool         { return c.secure }

@@ -16,6 +16,7 @@ import (
 
 type options struct {
 	tlsConfig        *tls.Config
+	withoutTLS       bool
 	codec            *packet.Codec
 	handshakeTimeout time.Duration
 	writeTimeout     time.Duration
@@ -42,7 +43,7 @@ func defaultOptions() options {
 	}
 }
 
-// WithTLS 是必需配置。客户端不得跳过证书和主机名校验。
+// WithTLS 配置TLS，与WithoutTLS互斥。客户端不得跳过证书和主机名校验。
 func WithTLS(config *tls.Config) Option {
 	return func(o *options) {
 		o.tlsConfig = config.Clone()
@@ -50,6 +51,11 @@ func WithTLS(config *tls.Config) Option {
 			o.tlsConfig.MinVersion = tls.VersionTLS13
 		}
 	}
+}
+
+// WithoutTLS 显式关闭TLS，只允许本机回环地址上的监听和拨号。
+func WithoutTLS() Option {
+	return func(o *options) { o.withoutTLS = true }
 }
 
 func WithCodec(codec *packet.Codec) Option {
@@ -89,13 +95,16 @@ func WithMTU(mtu int) Option {
 
 // validate 检查 Listen 和 NewDialer 共用的必需配置及 KCP 参数。
 func (o options) validate() {
-	if o.tlsConfig == nil || o.codec == nil {
-		panic("network/kcp: 必须提供TLS配置和Codec")
+	if (o.tlsConfig == nil && !o.withoutTLS) || (o.tlsConfig != nil && o.withoutTLS) {
+		panic("network/kcp: 必须选择WithTLS或WithoutTLS，不能同时配置")
+	}
+	if o.codec == nil {
+		panic("network/kcp: 必须提供Codec")
 	}
 	if o.handshakeTimeout <= 0 || o.writeTimeout <= 0 {
 		panic("network/kcp: 握手和写入超时必须大于0")
 	}
-	if o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
+	if o.tlsConfig != nil && o.tlsConfig.MaxVersion != 0 && o.tlsConfig.MaxVersion < o.tlsConfig.MinVersion {
 		panic("network/kcp: TLS版本范围错误")
 	}
 	if o.dataShards < 0 || o.parityShards < 0 || (o.dataShards == 0) != (o.parityShards == 0) || o.dataShards+o.parityShards > 256 {
@@ -119,12 +128,16 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 		opt(&o)
 	}
 	o.validate()
-	if len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
+	if !o.withoutTLS && len(o.tlsConfig.Certificates) == 0 && o.tlsConfig.GetCertificate == nil && o.tlsConfig.GetConfigForClient == nil {
 		panic("network/kcp: 服务端必须提供TLS证书")
 	}
 	raw, err := kcpgo.ListenWithOptions(address, o.block, o.dataShards, o.parityShards)
 	if err != nil {
 		return nil, err
+	}
+	if o.withoutTLS && !transport.IsLoopback(raw.Addr()) {
+		_ = raw.Close()
+		panic("network/kcp: 明文监听只能绑定本机回环地址")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &listener{raw: raw, options: o, ctx: ctx, cancel: cancel}, nil
@@ -137,6 +150,9 @@ func (l *listener) Accept() (transport.Conn, error) {
 		return nil, err
 	}
 	configureSession(session, l.options)
+	if l.options.withoutTLS {
+		return netconn.New(session, l.options.codec, transport.TypeKCP, l.options.writeTimeout), nil
+	}
 	raw := tls.Server(session, l.options.tlsConfig)
 	ctx, cancel := context.WithTimeout(l.ctx, l.options.handshakeTimeout)
 	defer cancel()
@@ -168,7 +184,7 @@ func NewDialer(address string, opts ...Option) transport.Dialer {
 		opt(&o)
 	}
 	o.validate()
-	if o.tlsConfig.InsecureSkipVerify {
+	if o.tlsConfig != nil && o.tlsConfig.InsecureSkipVerify {
 		panic("network/kcp: 禁止跳过TLS证书校验")
 	}
 	return &dialer{address: address, options: o}
@@ -189,11 +205,17 @@ func (d *dialer) DialContext(ctx context.Context) (transport.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if d.options.withoutTLS && !addresses[0].IP.IsLoopback() {
+		return nil, transport.ErrInsecure
+	}
 	session, err := kcpgo.DialWithOptions(net.JoinHostPort(addresses[0].String(), port), d.options.block, d.options.dataShards, d.options.parityShards)
 	if err != nil {
 		return nil, err
 	}
 	configureSession(session, d.options)
+	if d.options.withoutTLS {
+		return netconn.New(session, d.options.codec, transport.TypeKCP, d.options.writeTimeout), nil
+	}
 	config := d.options.tlsConfig.Clone()
 	if config.ServerName == "" {
 		config.ServerName = host

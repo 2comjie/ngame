@@ -121,7 +121,7 @@ func (s *Server) acceptLoop(listener transport.Listener) {
 			slog.Debug("network: 接入失败", "error", err)
 			continue
 		}
-		if !conn.Secure() {
+		if !conn.Secure() && (!transport.IsLoopback(conn.LocalAddr()) || !transport.IsLoopback(conn.RemoteAddr())) {
 			_ = conn.Close()
 			continue
 		}

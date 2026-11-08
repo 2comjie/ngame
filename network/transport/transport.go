@@ -53,21 +53,33 @@ type Conn interface {
 	RemoteAddr() net.Addr
 	Type() Type
 
-	// Secure 表示已成功完成 TLS 握手，不得仅根据是否配置 TLS 返回 true。
-	// 客户端握手必须验证服务器证书和目标主机名。
+	// Secure 表示连接实际完成了TLS握手；本机明文连接返回false。
+	// 代理终止TLS后，后端连接不会根据HTTP转发头被标记为安全连接。
 	Secure() bool
 }
 
 type Listener interface {
-	// Accept 只返回已经完成安全握手的连接，此时尚未进行玩家凭证认证。
-	// 握手失败的底层连接由实现关闭，不得作为可用连接返回。
+	// Accept 返回已完成TLS握手的连接，或显式配置的本机明文连接。
+	// 此时尚未进行玩家凭证认证，握手失败的底层连接由实现关闭。
 	Accept() (Conn, error)
 	Close() error
 	Addr() net.Addr
 }
 
 type Dialer interface {
-	// DialContext 在 ctx 限制内完成底层连接和安全握手。
+	// DialContext 在ctx限制内完成连接；TLS模式下还必须完成安全握手。
 	// 失败时关闭已建立的底层连接；成功返回仍需由 network 执行凭证认证。
 	DialContext(ctx context.Context) (Conn, error)
+}
+
+// IsLoopback 判断传输地址是否为本机回环地址，不解析域名或信任HTTP转发头。
+func IsLoopback(addr net.Addr) bool {
+	switch addr := addr.(type) {
+	case *net.TCPAddr:
+		return addr.IP.IsLoopback()
+	case *net.UDPAddr:
+		return addr.IP.IsLoopback()
+	default:
+		return false
+	}
 }
