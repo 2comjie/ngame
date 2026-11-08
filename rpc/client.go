@@ -13,8 +13,9 @@ func NewClient(discover registry.Discover, service string, opts ...grpc.DialOpti
 	}
 	dialOpts := []grpc.DialOption{
 		grpc.WithResolvers(NewResolver(discover)),
-		grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"ngame":{}}]}`),
 	}
 	dialOpts = append(dialOpts, opts...)
+	// gRPC 使用第一个匹配的 Resolver，默认服务配置则以最后一个选项为准。
+	dialOpts = append(dialOpts, grpc.WithDefaultServiceConfig(`{"loadBalancingConfig":[{"ngame":{}}]}`))
 	return grpc.NewClient("ngame:///"+url.PathEscape(service), dialOpts...)
 }

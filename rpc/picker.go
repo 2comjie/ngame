@@ -6,16 +6,20 @@ import (
 	"github.com/2comjie/ngame/endpoint"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
 type instanceTarget struct {
-	info   instanceInfo
-	picker balancer.Picker
+	info  instanceInfo
+	conn  balancer.SubConn
+	state connectivity.State
 }
 
 type weightedTarget struct {
-	picker balancer.Picker
+	id     string
+	conn   balancer.SubConn
 	weight float64
 }
 
@@ -35,8 +39,14 @@ func (p *routingPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error
 		if target.info.Status == endpoint.Shutdown {
 			return balancer.PickResult{}, status.Errorf(codes.Unavailable, "rpc: 目标实例 %q 正在退出", instanceId)
 		}
-		// 显式定向允许 Hung 和零权重实例，连接就绪及失败语义交给其子 Picker。
-		return target.picker.Pick(info)
+		switch target.state {
+		case connectivity.Ready:
+			return balancer.PickResult{SubConn: target.conn, Metadata: metadata.Pairs(instanceHeader, instanceId)}, nil
+		case connectivity.Idle, connectivity.Connecting:
+			return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
+		default:
+			return balancer.PickResult{}, status.Errorf(codes.Unavailable, "rpc: 目标实例 %q 连接不可用", instanceId)
+		}
 	}
 	if len(p.ready) == 0 {
 		if p.connecting {
@@ -48,9 +58,10 @@ func (p *routingPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error
 	choice := rand.Float64() * p.totalWeight
 	for _, target := range p.ready[:len(p.ready)-1] {
 		if choice < target.weight {
-			return target.picker.Pick(info)
+			return balancer.PickResult{SubConn: target.conn, Metadata: metadata.Pairs(instanceHeader, target.id)}, nil
 		}
 		choice -= target.weight
 	}
-	return p.ready[len(p.ready)-1].picker.Pick(info)
+	target := p.ready[len(p.ready)-1]
+	return balancer.PickResult{SubConn: target.conn, Metadata: metadata.Pairs(instanceHeader, target.id)}, nil
 }
