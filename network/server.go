@@ -11,11 +11,13 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/2comjie/ngame/network/protocol"
 	"github.com/2comjie/ngame/network/transport"
 	"github.com/2comjie/ngame/packet"
+	"github.com/2comjie/ntool/util/gopool"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -318,6 +320,86 @@ func (s *Server) PushUid(ctx context.Context, uid uint64, push *packet.Message) 
 		return err
 	}
 	return session.Conn.WriteContext(ctx, message)
+}
+
+// Broadcast 向调用时所有已认证的Session推送，返回成功写入的连接数。
+// 单个连接失败不影响其他连接，部分失败返回ErrPushFailed；ctx取消时返回ctx.Err()。
+func (s *Server) Broadcast(ctx context.Context, push *packet.Message) (uint32, error) {
+	s.mutex.RLock()
+	sessions := make([]*Session, 0, len(s.byUid))
+	for _, session := range s.byUid {
+		sessions = append(sessions, session)
+	}
+	s.mutex.RUnlock()
+	return s.pushSessions(ctx, sessions, push)
+}
+
+// MultiPush 向指定Uid列表推送，重复Uid只发送一次，离线用户跳过。
+// 发送期间连接的替换不会将本次消息转发给新Session，返回规则与Broadcast相同。
+func (s *Server) MultiPush(ctx context.Context, uids []uint64, push *packet.Message) (uint32, error) {
+	s.mutex.RLock()
+	sessions := make([]*Session, 0, len(uids))
+	seen := make(map[uint64]bool, len(uids))
+	for _, uid := range uids {
+		if session := s.byUid[uid]; session != nil && !seen[uid] {
+			seen[uid] = true
+			sessions = append(sessions, session)
+		}
+	}
+	s.mutex.RUnlock()
+	return s.pushSessions(ctx, sessions, push)
+}
+
+func (s *Server) pushSessions(ctx context.Context, sessions []*Session, push *packet.Message) (uint32, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(sessions) == 0 {
+		return 0, nil
+	}
+	message := &packet.Message{Header: packet.Header{Type: packet.Push, Route: push.Header.Route, Values: maps.Clone(push.Header.Values)}, Body: bytes.Clone(push.Body)}
+	if err := packet.NewCodec(0).Validate(message); err != nil {
+		return 0, err
+	}
+	if err := encodeBody(s.options, message); err != nil {
+		return 0, err
+	}
+	var next atomic.Int64
+	var success atomic.Uint32
+	var failed atomic.Bool
+	var wait sync.WaitGroup
+	for range min(16, len(sessions)) {
+		wait.Add(1)
+		gopool.CtxGo(ctx, func() {
+			defer wait.Done()
+			for ctx.Err() == nil {
+				index := int(next.Add(1) - 1)
+				if index >= len(sessions) {
+					return
+				}
+				session := sessions[index]
+				if session.ctx.Err() != nil {
+					continue
+				}
+				if err := session.Conn.WriteContext(ctx, message); err != nil {
+					failed.Store(true)
+					if ctx.Err() == nil && session.ctx.Err() == nil {
+						slog.Warn("network: 批量推送失败", "uid", session.Uid(), "error", err)
+					}
+					continue
+				}
+				success.Add(1)
+			}
+		})
+	}
+	wait.Wait()
+	if err := ctx.Err(); err != nil {
+		return success.Load(), err
+	}
+	if failed.Load() {
+		return success.Load(), ErrPushFailed
+	}
+	return success.Load(), nil
 }
 
 func (s *Server) KickUid(uid uint64) bool {

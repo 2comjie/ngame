@@ -14,4 +14,5 @@ var (
 	ErrBodyTooLarge    = errors.New("network: Body超过上限")
 	ErrPendingFull     = errors.New("network: 等待响应的请求过多")
 	ErrBindResponse    = errors.New("network: 认证响应错误")
+	ErrPushFailed      = errors.New("network: 部分连接推送失败")
 )
