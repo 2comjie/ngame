@@ -1,9 +1,0 @@
-Use case: stylized-concept
-Asset type: widescreen 16:9 cover image for a Chinese engineering blog article.
-Primary request: Create a polished editorial cover about service registration and discovery in Go, with Redis and etcd as two alternative backends.
-Scene and subject: A refined dark navy technical canvas with an elegant distributed server topology. A central luminous registry directory connects to several compact server nodes with clean cyan paths. Suggest a red layered Redis-style data symbol and a blue geometric etcd-style cluster symbol as two balanced alternatives within the composition. The visual is conceptual, not a literal executable architecture diagram.
-Style: Premium restrained 3D editorial illustration with crisp geometric forms, fine technical grid details, subtle glass and brushed-metal surfaces, sophisticated lighting and generous breathing room. Contemporary developer publication art direction, not a UI screenshot.
-Composition: Wide horizontal cover with a strong readable title area and a coherent server-network illustration. Keep all essential content inside generous crop-safe margins. Strong hierarchy, clean silhouette, legible at thumbnail scale.
-Text, render verbatim: Main title "服务注册与发现". Smaller subtitle "Go · Redis · etcd". Only these two text lines; no other letters, labels or numbers. Use precise legible modern Chinese sans-serif typography in soft white, with the title large and confident.
-Palette: Midnight navy, cool cyan and blue, a controlled red accent. Subtle luminous connection lines without excessive bloom.
-Constraints: Opaque background. One finished landscape image, 16:9 composition. No watermark, no people, no mascots, no dense tiny labels, no random code fragments, no cluttered arrows, no fake performance charts, no decorative text.

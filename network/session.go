@@ -12,6 +12,13 @@ import (
 type queuedMessage struct {
 	message *packet.Message
 	size    int64
+	call    *sessionCall
+}
+
+type sessionCall struct {
+	ctx     context.Context
+	execute func(context.Context, *Session, *packet.Message) error
+	done    chan error
 }
 
 type Session struct {

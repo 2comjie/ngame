@@ -163,7 +163,7 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 		upgrader: websocket.Upgrader{HandshakeTimeout: o.handshakeTimeout, Subprotocols: []string{Subprotocol}, CheckOrigin: o.checkOrigin}}
 	l.server = &http.Server{Handler: l, ReadHeaderTimeout: o.handshakeTimeout, WriteTimeout: o.handshakeTimeout, IdleTimeout: o.handshakeTimeout}
 	go func() {
-		var serving net.Listener = raw
+		var serving = raw
 		if !o.withoutTLS {
 			serving = tls.NewListener(raw, o.tlsConfig)
 		}

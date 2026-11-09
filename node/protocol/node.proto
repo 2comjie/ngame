@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package ngame.node;
+
+option go_package = "github.com/2comjie/ngame/node/protocol;protocol";
+
+// CallRequest 由网关转发，Uid 从已认证 Session 获取。
+// GateId、SessionId 标识请求来源；目标 Node 由 RPC 定向路由选择。
+// 客户端请求的 Seq 留在网关，由原 ReqContext 负责关联响应。
+message CallRequest {
+  uint64 uid = 1;
+  string gate_id = 2;
+  uint64 session_id = 3;
+  uint32 route = 4;
+  // 对应 packet.Header.Values，键统一使用小写。
+  map<string, string> values = 5;
+  // 业务明文；客户端协议的压缩、加密由网关 network 层处理。
+  bytes body = 6;
+}
+
+message CallResponse {
+  // false 表示业务处理完成，但无需向客户端回包；gRPC 本身仍正常返回。
+  bool replied = 1;
+  map<string, string> values = 2;
+  bytes body = 3;
+}
+
+service Node {
+  // 同步执行业务请求，处理逻辑由上层实现。
+  // 业务失败通过 gRPC error 返回；普通超时不能据此自动重放请求。
+  rpc Call(CallRequest) returns (CallResponse);
+}

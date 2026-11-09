@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package ngame.gate;
+
+option go_package = "github.com/2comjie/ngame/gate/protocol;protocol";
+
+import "google/protobuf/empty.proto";
+
+// GateId 通过 RPC 定向路由选择，SessionId 必须来自该网关实例的会话归属。
+message SessionTarget {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+}
+
+enum PushCode {
+  // 已成功写入连接，不代表客户端已经收到或处理。
+  PUSH_SENT = 0;
+  // 发送前确认会话不存在或不匹配；本目标未执行发送，可以重新定位。
+  PUSH_SESSION_NOT_HERE = 1;
+  // 写入失败等原因导致无法确认是否投递，不得自动重放。
+  PUSH_DELIVERY_UNKNOWN = 2;
+}
+
+message PushRequest {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+  uint32 route = 3;
+  // 对应 packet.Header.Values，键统一使用小写。
+  map<string, string> values = 4;
+  // 业务明文；消息 Type、Seq、压缩及加密由网关 network 层处理。
+  bytes body = 5;
+}
+
+message PushResponse {
+  PushCode code = 1;
+}
+
+message MultiPushRequest {
+  // 调用方按 GateId 分组，只包含本次目标网关的会话。
+  // 实现按 Uid、SessionId 去重，同一目标最多发送一次。
+  repeated SessionTarget targets = 1;
+  uint32 route = 2;
+  map<string, string> values = 3;
+  bytes body = 4;
+}
+
+message PushResult {
+  SessionTarget target = 1;
+  PushCode code = 2;
+}
+
+message MultiPushResponse {
+  // 每个去重后的目标一条结果，仅 SessionNotHere 允许重新定位并重试。
+  repeated PushResult results = 1;
+}
+
+message BroadcastRequest {
+  uint32 route = 1;
+  map<string, string> values = 2;
+  bytes body = 3;
+}
+
+message BroadcastResponse {
+  // 本次操作取得的已绑定会话快照大小。
+  uint64 target_count = 1;
+  uint64 sent_count = 2;
+  // 未确认成功写入的数量；不意味着客户端肯定没收到，不自动重放广播。
+  uint64 failed_count = 3;
+}
+
+enum KickCode {
+  // 目标会话已关闭，不表示业务退出回调已经完成。
+  KICK_CLOSED = 0;
+  // 指定旧会话已经不存在；不重新定位去关闭新登录的会话。
+  KICK_SESSION_NOT_HERE = 1;
+}
+
+message KickRequest {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+}
+
+message KickResponse {
+  KickCode code = 1;
+}
+
+enum MockCallCode {
+  MOCK_CALL_OK = 0;
+  // 进入业务处理前发现会话不存在或不匹配，可以重新定位。
+  MOCK_CALL_SESSION_NOT_HERE = 1;
+}
+
+message MockCallRequest {
+  uint64 uid = 1;
+  uint64 session_id = 2;
+  uint32 route = 3;
+  map<string, string> values = 4;
+  bytes body = 5;
+}
+
+message MockCallResponse {
+  MockCallCode code = 1;
+  // 业务响应只返回本次 RPC 调用方，不自动向客户端发送。
+  bool replied = 2;
+  map<string, string> values = 3;
+  bytes body = 4;
+}
+
+message SessionCountResponse {
+  // 本节点当前绑定 Uid 的会话数量，不包含尚未认证、绑定的连接。
+  uint64 count = 1;
+}
+
+// 所有方法只操作当前网关；归属查询、跨网关分组及重试由上层决定。
+// SessionNotHere 仅用于确认尚未执行目标操作的情况。
+// 参数及执行错误通过 gRPC error 返回，普通超时不视为 SessionNotHere。
+service Gate {
+  rpc Push(PushRequest) returns (PushResponse);
+  rpc MultiPush(MultiPushRequest) returns (MultiPushResponse);
+  rpc Broadcast(BroadcastRequest) returns (BroadcastResponse);
+  rpc Kick(KickRequest) returns (KickResponse);
+  rpc MockCall(MockCallRequest) returns (MockCallResponse);
+  rpc SessionCount(google.protobuf.Empty) returns (SessionCountResponse);
+}

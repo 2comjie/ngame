@@ -225,19 +225,47 @@ func (s *Server) serveSession(session *Session) {
 			if session.ctx.Err() != nil {
 				return
 			}
+			if queued.call != nil {
+				if err := queued.call.ctx.Err(); err != nil {
+					queued.call.done <- err
+					continue
+				}
+				s.mutex.RLock()
+				current := s.byUid[session.Uid()] == session
+				s.mutex.RUnlock()
+				if !current {
+					queued.call.done <- ErrNotBound
+					continue
+				}
+			}
 			if queued.message.Header.Type == packet.BindReq {
 				s.handleBind(session, queued.message)
 				continue
 			}
-			if err := decodeBody(s.options, queued.message); err != nil {
-				return
+			if queued.call == nil {
+				if err := decodeBody(s.options, queued.message); err != nil {
+					return
+				}
 			}
 			ctx := session.ctx
+			if queued.call != nil {
+				ctx = queued.call.ctx
+			}
 			cancel := func() {}
 			if s.options.requestTimeout > 0 {
 				ctx, cancel = context.WithTimeout(ctx, s.options.requestTimeout)
+			} else if queued.call != nil {
+				ctx, cancel = context.WithCancel(ctx)
 			}
-			if s.options.onReq != nil {
+			if queued.call != nil {
+				stop := context.AfterFunc(session.ctx, cancel)
+				if err := ctx.Err(); err != nil {
+					queued.call.done <- err
+				} else {
+					queued.call.done <- queued.call.execute(ctx, session, queued.message)
+				}
+				stop()
+			} else if s.options.onReq != nil {
 				s.options.onReq(&ReqContext{Context: ctx, Session: session, Request: queued.message, options: s.options})
 			}
 			cancel()
@@ -323,13 +351,20 @@ func (s *Server) PushUid(ctx context.Context, uid uint64, push *packet.Message) 
 // Broadcast 向调用时所有已认证的Session推送，返回成功写入的连接数。
 // 单个连接失败不影响其他连接，部分失败返回ErrPushFailed；ctx取消时返回ctx.Err()。
 func (s *Server) Broadcast(ctx context.Context, push *packet.Message) (uint32, error) {
+	_, sent, err := s.BroadcastStats(ctx, push)
+	return uint32(sent), err
+}
+
+// BroadcastStats 返回同一次会话快照的目标数及成功写入数。
+func (s *Server) BroadcastStats(ctx context.Context, push *packet.Message) (uint64, uint64, error) {
 	s.mutex.RLock()
 	sessions := make([]*Session, 0, len(s.byUid))
 	for _, session := range s.byUid {
 		sessions = append(sessions, session)
 	}
 	s.mutex.RUnlock()
-	return s.pushSessions(ctx, sessions, push)
+	sent, err := s.pushSessions(ctx, sessions, push)
+	return uint64(len(sessions)), uint64(sent), err
 }
 
 // MultiPush 向指定Uid列表推送，重复Uid只发送一次，离线用户跳过。
@@ -411,7 +446,8 @@ func (s *Server) KickUid(uid uint64) bool {
 	return true
 }
 
-func (s *Server) Shutdown(ctx context.Context) error {
+// RequestStop 开始关闭监听和连接，不等待 Session 回调退出。
+func (s *Server) RequestStop() {
 	s.mutex.Lock()
 	first := !s.closed
 	s.closed = true
@@ -432,6 +468,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 		go func() { s.wait.Wait(); close(s.done) }()
 	}
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.RequestStop()
 	select {
 	case <-s.done:
 		return nil
