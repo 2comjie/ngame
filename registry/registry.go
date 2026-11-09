@@ -32,6 +32,7 @@ type Registration interface {
 }
 
 // Discover 返回的实例及其 Meta 均与实现内部状态独立，调用方可以保留或修改。
+// 内置 Redis/etcd 实现共享本地缓存，首次同步完成前等待调用方 ctx，后续读取为最终一致。
 type Discover interface {
 	// Get 按实例 Id 查询，不存在时返回 found=false、err=nil。
 	Get(ctx context.Context, instanceId string) (instance endpoint.ServiceInst, found bool, err error)

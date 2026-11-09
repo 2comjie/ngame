@@ -1,9 +1,8 @@
 package rpc
 
 import (
-	"log/slog"
-
 	"github.com/2comjie/ngame/endpoint"
+	"github.com/2comjie/ntool/logx"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/connectivity"
 )
@@ -86,13 +85,13 @@ func (b *instanceBalancer) updateConnection(entry *instanceConn, update balancer
 		entry.conn.Connect()
 	}
 	if entry.state == connectivity.TransientFailure {
-		slog.Debug("rpc: 实例连接失败", "id", entry.info.Id, "error", update.ConnectionError)
+		logx.Debugf("rpc: 实例连接失败 id=%s error=%v", entry.info.Id, update.ConnectionError)
 	}
 	b.publish()
 }
 
 func (b *instanceBalancer) ResolverError(err error) {
-	slog.Warn("rpc: 服务发现失败", "error", err)
+	logx.Warnf("rpc: 服务发现失败 error=%v", err)
 	// 暂时保留已有连接，Resolver 会重建订阅；不缓存或跨层保存错误。
 	b.publish()
 }

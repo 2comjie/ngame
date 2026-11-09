@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"log/slog"
 	"maps"
 	"math"
 	"net"
@@ -17,6 +16,7 @@ import (
 	"github.com/2comjie/ngame/network/protocol"
 	"github.com/2comjie/ngame/network/transport"
 	"github.com/2comjie/ngame/packet"
+	"github.com/2comjie/ntool/logx"
 	"github.com/2comjie/ntool/util/gopool"
 	"google.golang.org/protobuf/proto"
 )
@@ -76,9 +76,7 @@ func (s *Server) Start() error {
 		return ErrStarted
 	}
 	s.started = true
-	s.wait.Add(1)
-	go func() {
-		defer s.wait.Done()
+	s.wait.Go(func() {
 		ticker := time.NewTicker(max(time.Millisecond, min(time.Second, s.options.bindTimeout/2, s.options.heartbeatTimeout/2)))
 		defer ticker.Stop()
 		for {
@@ -101,7 +99,7 @@ func (s *Server) Start() error {
 				}
 			}
 		}
-	}()
+	})
 	for _, listener := range s.options.listeners {
 		for range s.options.acceptWorkers {
 			s.wait.Add(1)
@@ -120,7 +118,7 @@ func (s *Server) acceptLoop(listener transport.Listener) {
 				return
 			}
 			// 单个连接握手失败不应停止整个监听器。
-			slog.Debug("network: 接入失败", "error", err)
+			logx.Debugf("network: 接入失败 error=%v", err)
 			continue
 		}
 		if !conn.Secure() && (!transport.IsLoopback(conn.LocalAddr()) || !transport.IsLoopback(conn.RemoteAddr())) {
@@ -384,7 +382,7 @@ func (s *Server) pushSessions(ctx context.Context, sessions []*Session, push *pa
 				if err := session.Conn.WriteContext(ctx, message); err != nil {
 					failed.Store(true)
 					if ctx.Err() == nil && session.ctx.Err() == nil {
-						slog.Warn("network: 批量推送失败", "uid", session.Uid(), "error", err)
+						logx.Warnf("network: 批量推送失败 uid=%d error=%v", session.Uid(), err)
 					}
 					continue
 				}

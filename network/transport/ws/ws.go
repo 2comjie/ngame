@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/2comjie/ngame/network/transport"
 	"github.com/2comjie/ngame/packet"
+	"github.com/2comjie/ntool/logx"
 	"github.com/gorilla/websocket"
 )
 
@@ -168,7 +168,7 @@ func Listen(address string, opts ...Option) (transport.Listener, error) {
 			serving = tls.NewListener(raw, o.tlsConfig)
 		}
 		if err := l.server.Serve(serving); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			slog.Error("network/ws: 监听失败", "error", err)
+			logx.Errorf("network/ws: 监听失败 error=%v", err)
 			_ = l.Close()
 		}
 	}()

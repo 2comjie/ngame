@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	_ "embed"
 	"encoding/json"
-	"log/slog"
 	"maps"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/2comjie/ngame/endpoint"
 	"github.com/2comjie/ngame/registry"
+	"github.com/2comjie/ntool/logx"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -52,6 +52,7 @@ func WithSyncInterval(interval time.Duration) Option {
 }
 
 type Registry struct {
+	*registry.Discovery
 	client       redis.UniversalClient
 	keys         []string
 	channel      string
@@ -63,6 +64,7 @@ var _ registry.Registry = (*Registry)(nil)
 var _ registry.Discover = (*Registry)(nil)
 
 // New 同时提供注册和发现；client 的创建、认证、TLS 和关闭由调用方管理。
+// 自动启动共享发现缓存，调用方退出时须 Close；Close 不影响注册句柄。
 func New(client redis.UniversalClient, opts ...Option) *Registry {
 	o := options{prefix: "ngame:registry", ttl: 10 * time.Second, syncInterval: 5 * time.Second}
 	for _, opt := range opts {
@@ -73,7 +75,9 @@ func New(client redis.UniversalClient, opts ...Option) *Registry {
 	}
 	// 同一注册空间的两个 Hash 使用相同 hash tag，支持 Redis Cluster 中的 Lua 原子操作。
 	prefix := "{" + o.prefix + "}"
-	return &Registry{client: client, keys: []string{prefix + ":instances", prefix + ":owners"}, channel: prefix + ":changed", ttl: o.ttl, syncInterval: o.syncInterval}
+	r := &Registry{client: client, keys: []string{prefix + ":instances", prefix + ":owners"}, channel: prefix + ":changed", ttl: o.ttl, syncInterval: o.syncInterval}
+	r.Discovery = registry.NewDiscover((&discoverySource{Registry: r}).Watch)
+	return r
 }
 
 func (r *Registry) Register(ctx context.Context, instance endpoint.ServiceInst) (registry.Registration, error) {
@@ -107,12 +111,12 @@ func (r *Registry) Register(ctx context.Context, instance endpoint.ServiceInst) 
 				stop()
 				if err != nil {
 					if lifetime.Err() == nil {
-						slog.Warn("registry/redis: 注册续期失败", "id", instance.Id, "error", err)
+						logx.Warnf("registry/redis: 注册续期失败 id=%s error=%v", instance.Id, err)
 					}
 					return
 				}
 				if result == 0 {
-					slog.Warn("registry/redis: 注册所有权已失效", "id", instance.Id)
+					logx.Warnf("registry/redis: 注册所有权已失效 id=%s", instance.Id)
 					return
 				}
 			}

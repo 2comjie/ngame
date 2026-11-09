@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"maps"
 	"net/url"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/2comjie/ngame/endpoint"
 	"github.com/2comjie/ngame/registry"
+	"github.com/2comjie/ntool/logx"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
@@ -34,6 +34,7 @@ func WithTTL(ttl time.Duration) Option {
 }
 
 type Registry struct {
+	*registry.Discovery
 	client *clientv3.Client
 	prefix string
 	ttl    int64
@@ -43,6 +44,7 @@ var _ registry.Registry = (*Registry)(nil)
 var _ registry.Discover = (*Registry)(nil)
 
 // New 同时提供注册和发现；client 的创建、认证、TLS 和关闭由调用方管理。
+// 自动启动共享发现缓存，调用方退出时须 Close；Close 不影响注册句柄。
 func New(client *clientv3.Client, opts ...Option) *Registry {
 	o := options{prefix: "/ngame/services", ttl: 10 * time.Second}
 	for _, opt := range opts {
@@ -51,7 +53,9 @@ func New(client *clientv3.Client, opts ...Option) *Registry {
 	if client == nil || strings.Trim(o.prefix, "/") == "" || o.ttl <= 0 || o.ttl%time.Second != 0 {
 		panic("registry/etcd: 必须提供 client、非空前缀和正整数秒 TTL")
 	}
-	return &Registry{client: client, prefix: strings.TrimRight(o.prefix, "/") + "/", ttl: int64(o.ttl / time.Second)}
+	r := &Registry{client: client, prefix: strings.TrimRight(o.prefix, "/") + "/", ttl: int64(o.ttl / time.Second)}
+	r.Discovery = registry.NewDiscover((&discoverySource{Registry: r}).Watch)
+	return r
 }
 
 func (r *Registry) Register(ctx context.Context, instance endpoint.ServiceInst) (registry.Registration, error) {
@@ -75,7 +79,7 @@ func (r *Registry) Register(ctx context.Context, instance endpoint.ServiceInst) 
 		cleanup, stop := context.WithTimeout(r.client.Ctx(), 3*time.Second)
 		defer stop()
 		if _, err := r.client.Revoke(cleanup, lease.ID); err != nil && !errors.Is(err, rpctypes.ErrLeaseNotFound) {
-			slog.Warn("registry/etcd: 清理未完成的注册租约失败", "error", err)
+			logx.Warnf("registry/etcd: 清理未完成的注册租约失败 error=%v", err)
 		}
 	}()
 	key := r.prefix + url.PathEscape(instance.Id)
@@ -103,7 +107,7 @@ func (r *Registry) Register(ctx context.Context, instance endpoint.ServiceInst) 
 			case response, ok := <-keepAlive:
 				if !ok || response == nil || response.TTL <= 0 {
 					if lifetime.Err() == nil {
-						slog.Warn("registry/etcd: 注册租约失效", "id", instance.Id)
+						logx.Warnf("registry/etcd: 注册租约失效 id=%s", instance.Id)
 					}
 					return
 				}
