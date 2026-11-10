@@ -21,6 +21,7 @@ import (
 type Config struct {
 	Instance       endpoint.ServiceInst
 	Registry       registry.Registry
+	Binder         *Binder
 	RPCServer      *grpc.Server
 	RPCListener    net.Listener
 	NetworkOptions []network.Option
@@ -41,6 +42,9 @@ type App struct {
 	server          *network.Server
 	registry        registry.Registry
 	registration    registry.Registration
+	binder          *Binder
+	syncStarted     bool
+	syncDone        chan struct{}
 	rpcServer       *grpc.Server
 	rpcListener     net.Listener
 	forward         ForwardFunc
@@ -62,8 +66,8 @@ var _ gatepb.GateServer = (*App)(nil)
 
 func New(config Config) *App {
 	config.Instance.Validate()
-	if config.Registry == nil || config.RPCServer == nil || config.RPCListener == nil {
-		panic("gate: 必须提供 Registry、RPCServer 和 RPCListener")
+	if config.Registry == nil || config.Binder == nil || config.RPCServer == nil || config.RPCListener == nil {
+		panic("gate: 必须提供 Registry、Binder、RPCServer 和 RPCListener")
 	}
 	if config.Forward == nil || config.ErrorHandler == nil {
 		panic("gate: 必须提供 Forward 和 ErrorHandler")
@@ -80,6 +84,8 @@ func New(config Config) *App {
 		App:            app.New(config.Components...),
 		instance:       config.Instance,
 		registry:       config.Registry,
+		binder:         config.Binder,
+		syncDone:       make(chan struct{}),
 		rpcServer:      config.RPCServer,
 		rpcListener:    config.RPCListener,
 		forward:        config.Forward,
@@ -89,8 +95,11 @@ func New(config Config) *App {
 		cancel:         cancel,
 		rpcDone:        make(chan struct{}),
 	}
-	opts := append([]network.Option(nil), config.NetworkOptions...)
-	opts = append(opts, network.OnReq(g.onReq))
+	opts := []network.Option{
+		network.OnSessionEnd(g.onSessionEnd),
+	}
+	opts = append(opts, config.NetworkOptions...)
+	opts = append(opts, network.BeforeSessionBind(g.onSessionBind), network.OnReq(g.onReq))
 	g.server = network.NewServer(opts...)
 	gatepb.RegisterGateServer(g.rpcServer, g)
 	return g
@@ -119,6 +128,8 @@ func (g *App) Start() (err error) {
 	if err = g.App.Start(); err != nil {
 		return err
 	}
+	g.syncStarted = true
+	go g.syncSessions()
 	g.rpcStarted = true
 	go func() {
 		defer close(g.rpcDone)
@@ -175,6 +186,14 @@ func (g *App) Shutdown(ctx context.Context) error {
 	if err := g.server.Shutdown(ctx); err != nil {
 		g.forceStopRPC()
 		return errors.Join(shutdownErr, err)
+	}
+	if g.syncStarted {
+		select {
+		case <-g.syncDone:
+		case <-ctx.Done():
+			g.forceStopRPC()
+			return errors.Join(shutdownErr, ctx.Err())
+		}
 	}
 	if g.rpcStopDone == nil {
 		g.rpcStopDone = make(chan struct{})

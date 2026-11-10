@@ -69,6 +69,24 @@ func (s *Server) SessionCount() uint64 {
 	return uint64(len(s.byUid))
 }
 
+func (s *Server) Sessions() []*Session {
+	s.mutex.RLock()
+	defer s.mutex.RUnlock()
+	sessions := make([]*Session, 0, len(s.byUid))
+	for _, session := range s.byUid {
+		if !session.bindReady.Load() {
+			continue
+		}
+		select {
+		case <-session.Context().Done():
+			continue
+		default:
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
 // ExecuteSession 将业务明文与客户端请求排入同一个有界队列。
 // execute 在 Session 处理协程内运行，必须响应 ctx；不得在该协程中重入本方法。
 // 只有执行前确认目标会话不存在才返回 ErrNotBound，队列及取消错误不表示可以重放。

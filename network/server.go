@@ -212,8 +212,10 @@ func (s *Server) serveSession(session *Session) {
 		session.cancel()
 		_ = session.Conn.Close()
 		s.HandleClose(session.Conn)
-		if session.IsBound() && s.options.onSessionEnd != nil {
-			s.options.onSessionEnd(session)
+		if session.IsBound() {
+			for _, handler := range s.options.onSessionEnd {
+				handler(session)
+			}
 		}
 	}()
 	for {
@@ -316,6 +318,15 @@ func (s *Server) handleBind(session *Session, request *packet.Message) {
 	if old != nil {
 		_ = old.Conn.Close()
 	}
+	if s.options.beforeSessionBind != nil {
+		if err := s.options.beforeSessionBind(session); err != nil {
+			logx.Warnf("network: 会话绑定前置处理失败 uid=%d error=%v", session.Uid(), err)
+			session.cancel()
+			_ = session.Conn.Close()
+			return
+		}
+	}
+	session.bindReady.Store(true)
 	if s.options.onSessionBind != nil {
 		s.options.onSessionBind(session)
 	}

@@ -7,25 +7,26 @@ import (
 )
 
 type options struct {
-	listeners        []transport.Listener
-	dialer           transport.Dialer
-	auther           Auther
-	onSessionBind    func(*Session)
-	onSessionEnd     func(*Session)
-	onReq            func(*ReqContext)
-	zipper           Zipper
-	cryptor          Cryptor
-	bindTimeout      time.Duration
-	heartbeat        time.Duration
-	heartbeatTimeout time.Duration
-	requestTimeout   time.Duration
-	requestQueue     int
-	maxUnbound       int
-	acceptWorkers    int
-	maxBody          int
-	maxPending       int
-	pushQueue        int
-	maxPushBytes     int
+	listeners         []transport.Listener
+	dialer            transport.Dialer
+	auther            Auther
+	beforeSessionBind func(*Session) error
+	onSessionBind     func(*Session)
+	onSessionEnd      []func(*Session)
+	onReq             func(*ReqContext)
+	zipper            Zipper
+	cryptor           Cryptor
+	bindTimeout       time.Duration
+	heartbeat         time.Duration
+	heartbeatTimeout  time.Duration
+	requestTimeout    time.Duration
+	requestQueue      int
+	maxUnbound        int
+	acceptWorkers     int
+	maxBody           int
+	maxPending        int
+	pushQueue         int
+	maxPushBytes      int
 }
 
 type Option func(*options)
@@ -56,8 +57,15 @@ func OnSessionBind(handler func(*Session)) Option {
 }
 
 // OnSessionEnd 只对绑定成功的 Session 调用，且在其业务回调结束后调用。
+// 多次注册时，按注册顺序串行执行。
 func OnSessionEnd(handler func(*Session)) Option {
-	return func(o *options) { o.onSessionEnd = handler }
+	return func(o *options) { o.onSessionEnd = append(o.onSessionEnd, handler) }
+}
+
+// BeforeSessionBind 在已有 OnSessionBind 前执行，时机仍为 BindRsp 写入且 Uid 绑定之后。
+// 失败时关闭会话并跳过后续绑定回调，供组合组件登记必需的会话资源。
+func BeforeSessionBind(handler func(*Session) error) Option {
+	return func(o *options) { o.beforeSessionBind = handler }
 }
 
 // OnReq 在同一 Session 的处理协程中串行调用，回调应响应 ReqContext 的取消。

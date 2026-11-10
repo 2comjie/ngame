@@ -25,13 +25,15 @@ type Session struct {
 	Id   uint64
 	Conn transport.Conn
 
-	ctx         context.Context
-	cancel      context.CancelFunc
-	queue       chan queuedMessage
-	acceptedAt  time.Time
-	uid         atomic.Uint64
-	verified    atomic.Bool
-	boundAt     atomic.Int64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	queue      chan queuedMessage
+	acceptedAt time.Time
+	uid        atomic.Uint64
+	verified   atomic.Bool
+	boundAt    atomic.Int64
+
+	bindReady   atomic.Bool
 	heartbeatAt atomic.Int64
 	queuedBytes atomic.Int64
 }

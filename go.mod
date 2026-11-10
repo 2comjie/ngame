@@ -5,6 +5,7 @@ go 1.27.3
 require (
 	github.com/2comjie/ntool v0.1.4
 	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/dgraph-io/ristretto/v2 v2.4.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/spf13/cast v1.10.0
@@ -19,6 +20,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.7.0 // indirect
+	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
