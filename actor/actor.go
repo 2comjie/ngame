@@ -11,38 +11,46 @@ type Key struct {
 }
 
 type Actor interface {
+	OnStart(ctx StartContext) error
+	// OnUpdate 返回 0 使用默认更新间隔，返回负数停止自动 Update
+	OnUpdate(ctx UpdateContext) time.Duration
+	OnStop(ctx StopContext)
 }
 
-// 当前激活实例的句柄，由框架创建，可以保存。
+type Factory func(Key) Actor
+
+// Handle 当前激活实例的句柄，由框架创建，可以保存。
 // 同一个 Key 重新激活后，会获得新的 Handle。
 type Handle interface {
 	Key() Key
 	ActivationId() string
 
-	// 请求停止，不等待当前回调结束。
+	// Stop 请求停止，不等待当前回调结束。
 	Stop()
 
-	// 投递到自己的执行队列，不等待执行完成。
+	// RunOnMainLoop 投递到自己的执行队列，不等待执行完成。
 	RunOnMainLoop(task Task) error
 
-	// 定时任务最终也在自己的主循环执行。
+	// After 定时任务最终也在自己的主循环执行。
 	After(delay time.Duration, task Task) (Timer, error)
 	Every(interval time.Duration, task Task) (Timer, error)
 }
 
-// ctx 是任务执行时的上下文。
+// Task ctx 是任务执行时的上下文。
 // 回调在 Actor 主循环中执行，可以直接操作 Actor 状态。
 type Task func(ctx context.Context)
 
-// 定时任务句柄，可以保存、主动取消。
+// Timer 定时任务句柄，可以保存、主动取消。
 type Timer interface {
-	// 幂等，不等待正在执行的回调结束。
+	// Cancel 幂等，不等待正在执行的回调结束。
 	Cancel()
 }
 
 type StartContext struct {
 	context.Context
 	Self Handle
+	// Args 是本次激活的业务参数，可使用 JSON 或 Protobuf；仅在 OnStart 中使用。
+	Args []byte
 }
 
 type UpdateContext struct {
