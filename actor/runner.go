@@ -10,6 +10,7 @@ import (
 type runner struct {
 	key          Key
 	activationId string
+	lease        *Lease
 	options      options
 	mu           sync.Mutex
 	state        int
@@ -35,6 +36,15 @@ func (r *runner) Stop() {
 	r.requestStop(StopReasonSelf)
 }
 
+// checkLease 在业务回调前检查本地有效期，避免只依赖续租协程的调度时机。
+func (r *runner) checkLease() bool {
+	if r.lease.Active() {
+		return true
+	}
+	r.requestStop(StopReasonLeaseLost)
+	return false
+}
+
 func (r *runner) requestStop(reason StopReason) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -42,10 +52,17 @@ func (r *runner) requestStop(reason StopReason) {
 		r.state = stateStopping
 		r.reason = reason
 		r.wakeLoop()
+		stopErr := ErrStopping
+		if reason == StopReasonLeaseLost {
+			stopErr = ErrGuardLost
+		}
 		for ready := range r.starting {
-			ready <- ErrStopping
+			ready <- stopErr
 			delete(r.starting, ready)
 		}
+	}
+	if reason == StopReasonLeaseLost {
+		r.reason = reason
 	}
 	if reason != StopReasonSelf {
 		r.cancel()
@@ -145,6 +162,9 @@ func (r *runner) loop(value Actor) {
 	defer timer.Stop()
 	var batch []*actorTimer
 	for {
+		if !r.checkLease() {
+			return
+		}
 		r.mu.Lock()
 		if r.state != stateRunning {
 			r.mu.Unlock()
@@ -157,7 +177,7 @@ func (r *runner) loop(value Actor) {
 		}
 		r.mu.Unlock()
 
-		if !nextUpdate.IsZero() && !nextUpdate.After(now) {
+		if !nextUpdate.IsZero() && !nextUpdate.After(now) && r.checkLease() {
 			interval := value.OnUpdate(UpdateContext{
 				Context: r.ctx,
 				Self:    r,
@@ -176,6 +196,7 @@ func (r *runner) loop(value Actor) {
 		}
 
 		for _, scheduled := range batch {
+			r.checkLease()
 			r.mu.Lock()
 			// Cancel 或 Stop 可能发生在任务已取出、尚未开始执行时。
 			if r.state != stateRunning || scheduled.canceled {
@@ -243,6 +264,9 @@ func (r *runner) loop(value Actor) {
 		running := r.state == stateRunning
 		r.mu.Unlock()
 		if !running {
+			return
+		}
+		if !r.checkLease() {
 			return
 		}
 		task(r.ctx)

@@ -17,7 +17,8 @@ type Actor interface {
 	OnStop(ctx StopContext)
 }
 
-type Factory func(Key) Actor
+// Loader 加载已有业务实体并构造运行对象，不创建业务数据。
+type Loader func(ctx context.Context, key Key) (Actor, error)
 
 // Handle 当前激活实例的句柄，由框架创建，可以保存。
 // 同一个 Key 重新激活后，会获得新的 Handle。
@@ -49,8 +50,6 @@ type Timer interface {
 type StartContext struct {
 	context.Context
 	Self Handle
-	// Args 是本次激活的业务参数，可使用 JSON 或 Protobuf；仅在 OnStart 中使用。
-	Args []byte
 }
 
 type UpdateContext struct {

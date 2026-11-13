@@ -1,13 +1,13 @@
 package actor
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"sync"
 
 	"github.com/2comjie/ngame/app"
+	"github.com/2comjie/ntool/logx"
 )
 
 var (
@@ -27,21 +27,25 @@ const stateStopping = 3
 const stateStopped = 4
 
 type System struct {
-	mutex     sync.Mutex
-	factories map[string]Factory
-	actors    map[Key]*runner
-	options   options
-	ctx       context.Context
-	cancel    context.CancelFunc
-	started   bool
-	stopping  bool
-	wait      sync.WaitGroup
-	done      chan struct{}
+	guard    *Guard
+	mutex    sync.Mutex
+	loaders  map[string]Loader
+	actors   map[Key]*runner
+	options  options
+	ctx      context.Context
+	cancel   context.CancelFunc
+	started  bool
+	stopping bool
+	wait     sync.WaitGroup
+	done     chan struct{}
 }
 
 var _ app.Component = (*System)(nil)
 
-func New(opts ...Option) *System {
+func New(guard *Guard, opts ...Option) *System {
+	if guard == nil {
+		panic("actor: 必须提供全局激活协调器 Guard")
+	}
 	o := defaultOptions()
 	for _, opt := range opts {
 		opt(&o)
@@ -51,28 +55,29 @@ func New(opts ...Option) *System {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &System{
-		factories: make(map[string]Factory),
-		actors:    make(map[Key]*runner),
-		options:   o,
-		ctx:       ctx,
-		cancel:    cancel,
-		done:      make(chan struct{}),
+		guard:   guard,
+		loaders: make(map[string]Loader),
+		actors:  make(map[Key]*runner),
+		options: o,
+		ctx:     ctx,
+		cancel:  cancel,
+		done:    make(chan struct{}),
 	}
 }
 
-func (s *System) Register(actorType string, factory Factory) {
+func (s *System) Register(actorType string, loader Loader) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if actorType == "" || factory == nil {
-		panic("actor: 必须提供 Actor 类型和工厂")
+	if actorType == "" || loader == nil {
+		panic("actor: 必须提供 Actor 类型和 Loader")
 	}
 	if s.started || s.stopping {
-		panic("actor: 工厂必须在 System.Start 前注册")
+		panic("actor: Loader 必须在 System.Start 前注册")
 	}
-	if _, exists := s.factories[actorType]; exists {
+	if _, exists := s.loaders[actorType]; exists {
 		panic("actor: Actor 类型重复注册: " + actorType)
 	}
-	s.factories[actorType] = factory
+	s.loaders[actorType] = loader
 }
 
 func (s *System) Start() error {
@@ -88,9 +93,9 @@ func (s *System) Start() error {
 	return nil
 }
 
-// Spawn 并发调用时共享一次创建。ctx 仅限制本次等待，不取消其他调用方共享的 OnStart。
-// args 在新建时复制并交给 OnStart。已存在的 Actor 不重复初始化，后续 args 不会覆盖已有状态。
-func (s *System) Spawn(ctx context.Context, key Key, args []byte) (Handle, error) {
+// Spawn 本节点并发调用共享一次激活，跨节点通过 Guard 抢占。
+// ctx 只限制本次等待；Loader、OnStart 使用独立的生命周期上下文。
+func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 	if key.Type == "" || key.Id == "" {
 		return nil, ErrInvalidKey
 	}
@@ -105,8 +110,8 @@ func (s *System) Spawn(ctx context.Context, key Key, args []byte) (Handle, error
 	}
 	r := s.actors[key]
 	if r == nil {
-		factory := s.factories[key.Type]
-		if factory == nil {
+		loader := s.loaders[key.Type]
+		if loader == nil {
 			s.mutex.Unlock()
 			return nil, ErrTypeNotRegistered
 		}
@@ -125,7 +130,7 @@ func (s *System) Spawn(ctx context.Context, key Key, args []byte) (Handle, error
 		}
 		s.actors[key] = r
 		s.wait.Add(1)
-		go s.run(r, factory, bytes.Clone(args))
+		go s.run(r, loader)
 	}
 	r.mu.Lock()
 	s.mutex.Unlock()
@@ -199,19 +204,80 @@ func (s *System) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *System) run(r *runner, factory Factory, args []byte) {
+func (s *System) run(r *runner, loader Loader) {
 	defer s.wait.Done()
 	defer close(r.done)
 	defer r.cancel()
-	value := factory(r.key)
-	if value == nil {
-		panic("actor: 工厂返回了空 Actor")
+	var err error
+	defer func() {
+		// System 和 runner 同时加锁时始终先锁 System。
+		s.mutex.Lock()
+		r.mu.Lock()
+		r.state = stateStopped
+		delete(s.actors, r.key)
+		for ready := range r.starting {
+			ready <- err
+			delete(r.starting, ready)
+		}
+		r.mu.Unlock()
+		s.mutex.Unlock()
+	}()
+
+	acquireCtx, stopAcquire := context.WithTimeout(r.ctx, s.options.lifecycleTimeout)
+	lease, owner, acquired, acquireErr := s.guard.TryAcquire(acquireCtx, r.key, r.activationId)
+	stopAcquire()
+	if acquireErr != nil {
+		err = acquireErr
+		return
 	}
+	if !acquired {
+		err = &OwnedError{
+			Key:   r.key,
+			Owner: owner,
+		}
+		return
+	}
+	r.lease = lease
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), s.options.lifecycleTimeout)
+		defer cancel()
+		if releaseErr := lease.Release(ctx); releaseErr != nil && !errors.Is(releaseErr, ErrGuardLost) {
+			logx.Errorf("actor: 释放激活租约失败 type=%s id=%s error=%v", r.key.Type, r.key.Id, releaseErr)
+		}
+	}()
+	stopLeaseWatch := context.AfterFunc(lease.ctx, func() { r.requestStop(StopReasonLeaseLost) })
+	defer stopLeaseWatch()
+	if !r.checkLease() {
+		err = ErrGuardLost
+		return
+	}
+	r.mu.Lock()
+	starting := r.state == stateStarting
+	r.mu.Unlock()
+	if !starting {
+		err = ErrStopping
+		return
+	}
+
 	startCtx, cancel := context.WithTimeout(r.ctx, s.options.lifecycleTimeout)
-	err := value.OnStart(StartContext{
+	defer cancel()
+	value, err := loader(startCtx, r.key)
+	if err != nil {
+		return
+	}
+	if value == nil {
+		panic("actor: Loader 返回了空 Actor")
+	}
+	if !r.checkLease() {
+		err = ErrGuardLost
+		return
+	}
+	if err = startCtx.Err(); err != nil {
+		return
+	}
+	err = value.OnStart(StartContext{
 		Context: startCtx,
 		Self:    r,
-		Args:    args,
 	})
 	started := err == nil
 	if started {
@@ -223,7 +289,9 @@ func (s *System) run(r *runner, factory Factory, args []byte) {
 	}
 	cancel()
 	r.mu.Lock()
-	if err == nil && r.state != stateStarting {
+	if !lease.Active() {
+		err = ErrGuardLost
+	} else if err == nil && r.state != stateStarting {
 		err = ErrStopping
 	}
 	if err == nil {
@@ -239,7 +307,9 @@ func (s *System) run(r *runner, factory Factory, args []byte) {
 	}
 	r.mu.Lock()
 	r.state = stateStopping
-	if r.reason == 0 {
+	if !lease.Active() {
+		r.reason = StopReasonLeaseLost
+	} else if r.reason == 0 {
 		r.reason = StopReasonSelf
 	}
 	reason := r.reason
@@ -256,22 +326,17 @@ func (s *System) run(r *runner, factory Factory, args []byte) {
 	r.mu.Unlock()
 	if started {
 		stopCtx, stop := context.WithTimeout(context.Background(), s.options.lifecycleTimeout)
+		// 正常退出继续持有租约；失去租约时也取消正在执行的 OnStop。
+		stopWatch := context.AfterFunc(lease.ctx, stop)
+		if !lease.Active() {
+			stop()
+		}
 		value.OnStop(StopContext{
 			Context: stopCtx,
 			Self:    r,
 			Reason:  reason,
 		})
+		stopWatch()
 		stop()
 	}
-	// System 和 runner 同时加锁时始终先锁 System。
-	s.mutex.Lock()
-	r.mu.Lock()
-	r.state = stateStopped
-	delete(s.actors, r.key)
-	for ready := range r.starting {
-		ready <- err
-		delete(r.starting, ready)
-	}
-	r.mu.Unlock()
-	s.mutex.Unlock()
 }

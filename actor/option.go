@@ -26,6 +26,7 @@ func WithUpdateInterval(interval time.Duration) Option {
 	return func(o *options) { o.updateInterval = interval }
 }
 
+// WithLifecycleTimeout 设置 Loader 与 OnStart 的共享超时，以及 OnStop 的超时。
 func WithLifecycleTimeout(timeout time.Duration) Option {
 	return func(o *options) { o.lifecycleTimeout = timeout }
 }
