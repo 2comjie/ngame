@@ -15,6 +15,7 @@ var (
 	ErrStopped           = errors.New("actor: System 已停止")
 	ErrStopping          = errors.New("actor: Actor 正在停止")
 	ErrNotFound          = errors.New("actor: Actor 不存在")
+	ErrEntityNotFound    = errors.New("actor: 业务实体不存在")
 	ErrInvalidKey        = errors.New("actor: 必须提供 Type 和 Id")
 	ErrTypeNotRegistered = errors.New("actor: Actor 类型未注册")
 	ErrMailboxFull       = errors.New("actor: 邮箱已满")
@@ -29,7 +30,7 @@ const stateStopped = 4
 type System struct {
 	guard    *Guard
 	mutex    sync.Mutex
-	loaders  map[string]Loader
+	types    map[string]actorType
 	actors   map[Key]*runner
 	options  options
 	ctx      context.Context
@@ -56,7 +57,7 @@ func New(guard *Guard, opts ...Option) *System {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &System{
 		guard:   guard,
-		loaders: make(map[string]Loader),
+		types:   make(map[string]actorType),
 		actors:  make(map[Key]*runner),
 		options: o,
 		ctx:     ctx,
@@ -65,19 +66,23 @@ func New(guard *Guard, opts ...Option) *System {
 	}
 }
 
-func (s *System) Register(actorType string, loader Loader) {
+func (s *System) Register(name string, loader Loader, opts ...TypeOption) {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
-	if actorType == "" || loader == nil {
+	if name == "" || loader == nil {
 		panic("actor: 必须提供 Actor 类型和 Loader")
 	}
 	if s.started || s.stopping {
 		panic("actor: Loader 必须在 System.Start 前注册")
 	}
-	if _, exists := s.loaders[actorType]; exists {
-		panic("actor: Actor 类型重复注册: " + actorType)
+	if _, exists := s.types[name]; exists {
+		panic("actor: Actor 类型重复注册: " + name)
 	}
-	s.loaders[actorType] = loader
+	definition := actorType{loader: loader}
+	for _, opt := range opts {
+		opt(&definition)
+	}
+	s.types[name] = definition
 }
 
 func (s *System) Start() error {
@@ -110,8 +115,8 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 	}
 	r := s.actors[key]
 	if r == nil {
-		loader := s.loaders[key.Type]
-		if loader == nil {
+		definition, exists := s.types[key.Type]
+		if !exists {
 			s.mutex.Unlock()
 			return nil, ErrTypeNotRegistered
 		}
@@ -130,7 +135,7 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 		}
 		s.actors[key] = r
 		s.wait.Add(1)
-		go s.run(r, loader)
+		go s.run(r, definition)
 	}
 	r.mu.Lock()
 	s.mutex.Unlock()
@@ -187,7 +192,7 @@ func (s *System) RequestStop() {
 		r.requestStop(StopReasonShutdown)
 	}
 	s.cancel()
-	// stopping 与 wait.Add 由同一把锁保护，开始 Wait 后不会增加 Actor。
+	// stopping 与 wait.Add 由同一把锁保护，开始 Wait 后不会新增激活任务。
 	go func() {
 		s.wait.Wait()
 		close(s.done)
@@ -204,7 +209,7 @@ func (s *System) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (s *System) run(r *runner, loader Loader) {
+func (s *System) run(r *runner, definition actorType) {
 	defer s.wait.Done()
 	defer close(r.done)
 	defer r.cancel()
@@ -261,7 +266,17 @@ func (s *System) run(r *runner, loader Loader) {
 
 	startCtx, cancel := context.WithTimeout(r.ctx, s.options.lifecycleTimeout)
 	defer cancel()
-	value, err := loader(startCtx, r.key)
+	value, err := definition.loader(startCtx, r.key)
+	if errors.Is(err, ErrEntityNotFound) && definition.onNotFound != nil {
+		if !r.checkLease() {
+			err = ErrGuardLost
+			return
+		}
+		if err = definition.onNotFound(startCtx, r.key); err != nil {
+			return
+		}
+		value, err = definition.loader(startCtx, r.key)
+	}
 	if err != nil {
 		return
 	}
