@@ -27,7 +27,7 @@ type PushCode int32
 const (
 	// 已成功写入连接，不代表客户端已经收到或处理。
 	PushCode_PUSH_SENT PushCode = 0
-	// 发送前确认会话不存在或不匹配；本目标未执行发送，可以重新定位。
+	// 发送前确认本节点没有该玩家的连接；本目标未执行发送，可以重新定位。
 	PushCode_PUSH_SESSION_NOT_HERE PushCode = 1
 	// 写入失败等原因导致无法确认是否投递，不得自动重放。
 	PushCode_PUSH_DELIVERY_UNKNOWN PushCode = 2
@@ -79,7 +79,7 @@ type KickCode int32
 const (
 	// 目标会话已关闭，不表示业务退出回调已经完成。
 	KickCode_KICK_CLOSED KickCode = 0
-	// 指定旧会话已经不存在；不重新定位去关闭新登录的会话。
+	// 本节点没有该玩家的连接。
 	KickCode_KICK_SESSION_NOT_HERE KickCode = 1
 )
 
@@ -126,7 +126,7 @@ type MockCallCode int32
 
 const (
 	MockCallCode_MOCK_CALL_OK MockCallCode = 0
-	// 进入业务处理前发现会话不存在或不匹配，可以重新定位。
+	// 进入业务处理前发现本节点没有该玩家的连接，可以重新定位。
 	MockCallCode_MOCK_CALL_SESSION_NOT_HERE MockCallCode = 1
 )
 
@@ -169,64 +169,10 @@ func (MockCallCode) EnumDescriptor() ([]byte, []int) {
 	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{2}
 }
 
-// GateId 通过 RPC 定向路由选择，SessionId 必须来自该网关实例的会话归属。
-type SessionTarget struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	SessionId     uint64                 `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *SessionTarget) Reset() {
-	*x = SessionTarget{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *SessionTarget) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*SessionTarget) ProtoMessage() {}
-
-func (x *SessionTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use SessionTarget.ProtoReflect.Descriptor instead.
-func (*SessionTarget) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *SessionTarget) GetUid() uint64 {
-	if x != nil {
-		return x.Uid
-	}
-	return 0
-}
-
-func (x *SessionTarget) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
-	}
-	return 0
-}
-
 type PushRequest struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Uid       uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	SessionId uint64                 `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Route     uint32                 `protobuf:"varint,3,opt,name=route,proto3" json:"route,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Uid   uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Route uint32                 `protobuf:"varint,3,opt,name=route,proto3" json:"route,omitempty"`
 	// 对应 packet.Header.Values，键统一使用小写。
 	Values map[string]string `protobuf:"bytes,4,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// 业务明文；消息 Type、Seq、压缩及加密由网关 network 层处理。
@@ -237,7 +183,7 @@ type PushRequest struct {
 
 func (x *PushRequest) Reset() {
 	*x = PushRequest{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[1]
+	mi := &file_gate_protocol_gate_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -249,7 +195,7 @@ func (x *PushRequest) String() string {
 func (*PushRequest) ProtoMessage() {}
 
 func (x *PushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[1]
+	mi := &file_gate_protocol_gate_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -262,19 +208,12 @@ func (x *PushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushRequest.ProtoReflect.Descriptor instead.
 func (*PushRequest) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{1}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *PushRequest) GetUid() uint64 {
 	if x != nil {
 		return x.Uid
-	}
-	return 0
-}
-
-func (x *PushRequest) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
 	}
 	return 0
 }
@@ -309,7 +248,7 @@ type PushResponse struct {
 
 func (x *PushResponse) Reset() {
 	*x = PushResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[2]
+	mi := &file_gate_protocol_gate_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -321,7 +260,7 @@ func (x *PushResponse) String() string {
 func (*PushResponse) ProtoMessage() {}
 
 func (x *PushResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[2]
+	mi := &file_gate_protocol_gate_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -334,7 +273,7 @@ func (x *PushResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResponse.ProtoReflect.Descriptor instead.
 func (*PushResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{2}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PushResponse) GetCode() PushCode {
@@ -345,20 +284,19 @@ func (x *PushResponse) GetCode() PushCode {
 }
 
 type MultiPushRequest struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// 调用方按 GateId 分组，只包含本次目标网关的会话。
-	// 实现按 Uid、SessionId 去重，同一目标最多发送一次。
-	Targets       []*SessionTarget  `protobuf:"bytes,1,rep,name=targets,proto3" json:"targets,omitempty"`
-	Route         uint32            `protobuf:"varint,2,opt,name=route,proto3" json:"route,omitempty"`
-	Values        map[string]string `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	Body          []byte            `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Route  uint32                 `protobuf:"varint,2,opt,name=route,proto3" json:"route,omitempty"`
+	Values map[string]string      `protobuf:"bytes,3,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Body   []byte                 `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
+	// 调用方按 GateId 分组；按 Uid 去重，操作各玩家当前连接。
+	Uids          []uint64 `protobuf:"varint,5,rep,packed,name=uids,proto3" json:"uids,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MultiPushRequest) Reset() {
 	*x = MultiPushRequest{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[3]
+	mi := &file_gate_protocol_gate_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -370,7 +308,7 @@ func (x *MultiPushRequest) String() string {
 func (*MultiPushRequest) ProtoMessage() {}
 
 func (x *MultiPushRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[3]
+	mi := &file_gate_protocol_gate_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -383,14 +321,7 @@ func (x *MultiPushRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiPushRequest.ProtoReflect.Descriptor instead.
 func (*MultiPushRequest) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *MultiPushRequest) GetTargets() []*SessionTarget {
-	if x != nil {
-		return x.Targets
-	}
-	return nil
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *MultiPushRequest) GetRoute() uint32 {
@@ -414,17 +345,24 @@ func (x *MultiPushRequest) GetBody() []byte {
 	return nil
 }
 
+func (x *MultiPushRequest) GetUids() []uint64 {
+	if x != nil {
+		return x.Uids
+	}
+	return nil
+}
+
 type PushResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *SessionTarget         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
 	Code          PushCode               `protobuf:"varint,2,opt,name=code,proto3,enum=ngame.gate.PushCode" json:"code,omitempty"`
+	Uid           uint64                 `protobuf:"varint,3,opt,name=uid,proto3" json:"uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PushResult) Reset() {
 	*x = PushResult{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[4]
+	mi := &file_gate_protocol_gate_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -436,7 +374,7 @@ func (x *PushResult) String() string {
 func (*PushResult) ProtoMessage() {}
 
 func (x *PushResult) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[4]
+	mi := &file_gate_protocol_gate_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -449,14 +387,7 @@ func (x *PushResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PushResult.ProtoReflect.Descriptor instead.
 func (*PushResult) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *PushResult) GetTarget() *SessionTarget {
-	if x != nil {
-		return x.Target
-	}
-	return nil
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *PushResult) GetCode() PushCode {
@@ -464,6 +395,13 @@ func (x *PushResult) GetCode() PushCode {
 		return x.Code
 	}
 	return PushCode_PUSH_SENT
+}
+
+func (x *PushResult) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
 }
 
 type MultiPushResponse struct {
@@ -476,7 +414,7 @@ type MultiPushResponse struct {
 
 func (x *MultiPushResponse) Reset() {
 	*x = MultiPushResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[5]
+	mi := &file_gate_protocol_gate_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -488,7 +426,7 @@ func (x *MultiPushResponse) String() string {
 func (*MultiPushResponse) ProtoMessage() {}
 
 func (x *MultiPushResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[5]
+	mi := &file_gate_protocol_gate_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -501,7 +439,7 @@ func (x *MultiPushResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiPushResponse.ProtoReflect.Descriptor instead.
 func (*MultiPushResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{5}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *MultiPushResponse) GetResults() []*PushResult {
@@ -522,7 +460,7 @@ type BroadcastRequest struct {
 
 func (x *BroadcastRequest) Reset() {
 	*x = BroadcastRequest{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[6]
+	mi := &file_gate_protocol_gate_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -534,7 +472,7 @@ func (x *BroadcastRequest) String() string {
 func (*BroadcastRequest) ProtoMessage() {}
 
 func (x *BroadcastRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[6]
+	mi := &file_gate_protocol_gate_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -547,7 +485,7 @@ func (x *BroadcastRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastRequest.ProtoReflect.Descriptor instead.
 func (*BroadcastRequest) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{6}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *BroadcastRequest) GetRoute() uint32 {
@@ -584,7 +522,7 @@ type BroadcastResponse struct {
 
 func (x *BroadcastResponse) Reset() {
 	*x = BroadcastResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[7]
+	mi := &file_gate_protocol_gate_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -596,7 +534,7 @@ func (x *BroadcastResponse) String() string {
 func (*BroadcastResponse) ProtoMessage() {}
 
 func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[7]
+	mi := &file_gate_protocol_gate_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -609,7 +547,7 @@ func (x *BroadcastResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BroadcastResponse.ProtoReflect.Descriptor instead.
 func (*BroadcastResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{7}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *BroadcastResponse) GetTargetCount() uint64 {
@@ -636,14 +574,13 @@ func (x *BroadcastResponse) GetFailedCount() uint64 {
 type KickRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	SessionId     uint64                 `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *KickRequest) Reset() {
 	*x = KickRequest{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[8]
+	mi := &file_gate_protocol_gate_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -655,7 +592,7 @@ func (x *KickRequest) String() string {
 func (*KickRequest) ProtoMessage() {}
 
 func (x *KickRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[8]
+	mi := &file_gate_protocol_gate_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -668,19 +605,12 @@ func (x *KickRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KickRequest.ProtoReflect.Descriptor instead.
 func (*KickRequest) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{8}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *KickRequest) GetUid() uint64 {
 	if x != nil {
 		return x.Uid
-	}
-	return 0
-}
-
-func (x *KickRequest) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
 	}
 	return 0
 }
@@ -694,7 +624,7 @@ type KickResponse struct {
 
 func (x *KickResponse) Reset() {
 	*x = KickResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[9]
+	mi := &file_gate_protocol_gate_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -706,7 +636,7 @@ func (x *KickResponse) String() string {
 func (*KickResponse) ProtoMessage() {}
 
 func (x *KickResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[9]
+	mi := &file_gate_protocol_gate_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -719,7 +649,7 @@ func (x *KickResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KickResponse.ProtoReflect.Descriptor instead.
 func (*KickResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{9}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *KickResponse) GetCode() KickCode {
@@ -732,7 +662,6 @@ func (x *KickResponse) GetCode() KickCode {
 type MockCallRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	SessionId     uint64                 `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Route         uint32                 `protobuf:"varint,3,opt,name=route,proto3" json:"route,omitempty"`
 	Values        map[string]string      `protobuf:"bytes,4,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Body          []byte                 `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
@@ -742,7 +671,7 @@ type MockCallRequest struct {
 
 func (x *MockCallRequest) Reset() {
 	*x = MockCallRequest{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[10]
+	mi := &file_gate_protocol_gate_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -754,7 +683,7 @@ func (x *MockCallRequest) String() string {
 func (*MockCallRequest) ProtoMessage() {}
 
 func (x *MockCallRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[10]
+	mi := &file_gate_protocol_gate_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -767,19 +696,12 @@ func (x *MockCallRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MockCallRequest.ProtoReflect.Descriptor instead.
 func (*MockCallRequest) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{10}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MockCallRequest) GetUid() uint64 {
 	if x != nil {
 		return x.Uid
-	}
-	return 0
-}
-
-func (x *MockCallRequest) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
 	}
 	return 0
 }
@@ -818,7 +740,7 @@ type MockCallResponse struct {
 
 func (x *MockCallResponse) Reset() {
 	*x = MockCallResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[11]
+	mi := &file_gate_protocol_gate_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -830,7 +752,7 @@ func (x *MockCallResponse) String() string {
 func (*MockCallResponse) ProtoMessage() {}
 
 func (x *MockCallResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[11]
+	mi := &file_gate_protocol_gate_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -843,7 +765,7 @@ func (x *MockCallResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MockCallResponse.ProtoReflect.Descriptor instead.
 func (*MockCallResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{11}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *MockCallResponse) GetCode() MockCallCode {
@@ -884,7 +806,7 @@ type SessionCountResponse struct {
 
 func (x *SessionCountResponse) Reset() {
 	*x = SessionCountResponse{}
-	mi := &file_gate_protocol_gate_proto_msgTypes[12]
+	mi := &file_gate_protocol_gate_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -896,7 +818,7 @@ func (x *SessionCountResponse) String() string {
 func (*SessionCountResponse) ProtoMessage() {}
 
 func (x *SessionCountResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_gate_protocol_gate_proto_msgTypes[12]
+	mi := &file_gate_protocol_gate_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -909,7 +831,7 @@ func (x *SessionCountResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SessionCountResponse.ProtoReflect.Descriptor instead.
 func (*SessionCountResponse) Descriptor() ([]byte, []int) {
-	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{12}
+	return file_gate_protocol_gate_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SessionCountResponse) GetCount() uint64 {
@@ -924,15 +846,9 @@ var File_gate_protocol_gate_proto protoreflect.FileDescriptor
 const file_gate_protocol_gate_proto_rawDesc = "" +
 	"\n" +
 	"\x18gate/protocol/gate.proto\x12\n" +
-	"ngame.gate\x1a\x1bgoogle/protobuf/empty.proto\"@\n" +
-	"\rSessionTarget\x12\x10\n" +
-	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x02 \x01(\x04R\tsessionId\"\xe0\x01\n" +
+	"ngame.gate\x1a\x1bgoogle/protobuf/empty.proto\"\xc1\x01\n" +
 	"\vPushRequest\x12\x10\n" +
-	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x02 \x01(\x04R\tsessionId\x12\x14\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
 	"\x05route\x18\x03 \x01(\rR\x05route\x12;\n" +
 	"\x06values\x18\x04 \x03(\v2#.ngame.gate.PushRequest.ValuesEntryR\x06values\x12\x12\n" +
 	"\x04body\x18\x05 \x01(\fR\x04body\x1a9\n" +
@@ -940,19 +856,19 @@ const file_gate_protocol_gate_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"8\n" +
 	"\fPushResponse\x12(\n" +
-	"\x04code\x18\x01 \x01(\x0e2\x14.ngame.gate.PushCodeR\x04code\"\xee\x01\n" +
-	"\x10MultiPushRequest\x123\n" +
-	"\atargets\x18\x01 \x03(\v2\x19.ngame.gate.SessionTargetR\atargets\x12\x14\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x14.ngame.gate.PushCodeR\x04code\"\xcd\x01\n" +
+	"\x10MultiPushRequest\x12\x14\n" +
 	"\x05route\x18\x02 \x01(\rR\x05route\x12@\n" +
 	"\x06values\x18\x03 \x03(\v2(.ngame.gate.MultiPushRequest.ValuesEntryR\x06values\x12\x12\n" +
-	"\x04body\x18\x04 \x01(\fR\x04body\x1a9\n" +
+	"\x04body\x18\x04 \x01(\fR\x04body\x12\x12\n" +
+	"\x04uids\x18\x05 \x03(\x04R\x04uids\x1a9\n" +
 	"\vValuesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"i\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"H\n" +
 	"\n" +
-	"PushResult\x121\n" +
-	"\x06target\x18\x01 \x01(\v2\x19.ngame.gate.SessionTargetR\x06target\x12(\n" +
-	"\x04code\x18\x02 \x01(\x0e2\x14.ngame.gate.PushCodeR\x04code\"E\n" +
+	"PushResult\x12(\n" +
+	"\x04code\x18\x02 \x01(\x0e2\x14.ngame.gate.PushCodeR\x04code\x12\x10\n" +
+	"\x03uid\x18\x03 \x01(\x04R\x03uid\"E\n" +
 	"\x11MultiPushResponse\x120\n" +
 	"\aresults\x18\x01 \x03(\v2\x16.ngame.gate.PushResultR\aresults\"\xb9\x01\n" +
 	"\x10BroadcastRequest\x12\x14\n" +
@@ -966,17 +882,13 @@ const file_gate_protocol_gate_proto_rawDesc = "" +
 	"\ftarget_count\x18\x01 \x01(\x04R\vtargetCount\x12\x1d\n" +
 	"\n" +
 	"sent_count\x18\x02 \x01(\x04R\tsentCount\x12!\n" +
-	"\ffailed_count\x18\x03 \x01(\x04R\vfailedCount\">\n" +
+	"\ffailed_count\x18\x03 \x01(\x04R\vfailedCount\"\x1f\n" +
 	"\vKickRequest\x12\x10\n" +
-	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x02 \x01(\x04R\tsessionId\"8\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\"8\n" +
 	"\fKickResponse\x12(\n" +
-	"\x04code\x18\x01 \x01(\x0e2\x14.ngame.gate.KickCodeR\x04code\"\xe8\x01\n" +
+	"\x04code\x18\x01 \x01(\x0e2\x14.ngame.gate.KickCodeR\x04code\"\xc9\x01\n" +
 	"\x0fMockCallRequest\x12\x10\n" +
-	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x02 \x01(\x04R\tsessionId\x12\x14\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
 	"\x05route\x18\x03 \x01(\rR\x05route\x12?\n" +
 	"\x06values\x18\x04 \x03(\v2'.ngame.gate.MockCallRequest.ValuesEntryR\x06values\x12\x12\n" +
 	"\x04body\x18\x05 \x01(\fR\x04body\x1a9\n" +
@@ -1024,61 +936,58 @@ func file_gate_protocol_gate_proto_rawDescGZIP() []byte {
 }
 
 var file_gate_protocol_gate_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_gate_protocol_gate_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_gate_protocol_gate_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_gate_protocol_gate_proto_goTypes = []any{
 	(PushCode)(0),                // 0: ngame.gate.PushCode
 	(KickCode)(0),                // 1: ngame.gate.KickCode
 	(MockCallCode)(0),            // 2: ngame.gate.MockCallCode
-	(*SessionTarget)(nil),        // 3: ngame.gate.SessionTarget
-	(*PushRequest)(nil),          // 4: ngame.gate.PushRequest
-	(*PushResponse)(nil),         // 5: ngame.gate.PushResponse
-	(*MultiPushRequest)(nil),     // 6: ngame.gate.MultiPushRequest
-	(*PushResult)(nil),           // 7: ngame.gate.PushResult
-	(*MultiPushResponse)(nil),    // 8: ngame.gate.MultiPushResponse
-	(*BroadcastRequest)(nil),     // 9: ngame.gate.BroadcastRequest
-	(*BroadcastResponse)(nil),    // 10: ngame.gate.BroadcastResponse
-	(*KickRequest)(nil),          // 11: ngame.gate.KickRequest
-	(*KickResponse)(nil),         // 12: ngame.gate.KickResponse
-	(*MockCallRequest)(nil),      // 13: ngame.gate.MockCallRequest
-	(*MockCallResponse)(nil),     // 14: ngame.gate.MockCallResponse
-	(*SessionCountResponse)(nil), // 15: ngame.gate.SessionCountResponse
-	nil,                          // 16: ngame.gate.PushRequest.ValuesEntry
-	nil,                          // 17: ngame.gate.MultiPushRequest.ValuesEntry
-	nil,                          // 18: ngame.gate.BroadcastRequest.ValuesEntry
-	nil,                          // 19: ngame.gate.MockCallRequest.ValuesEntry
-	nil,                          // 20: ngame.gate.MockCallResponse.ValuesEntry
-	(*emptypb.Empty)(nil),        // 21: google.protobuf.Empty
+	(*PushRequest)(nil),          // 3: ngame.gate.PushRequest
+	(*PushResponse)(nil),         // 4: ngame.gate.PushResponse
+	(*MultiPushRequest)(nil),     // 5: ngame.gate.MultiPushRequest
+	(*PushResult)(nil),           // 6: ngame.gate.PushResult
+	(*MultiPushResponse)(nil),    // 7: ngame.gate.MultiPushResponse
+	(*BroadcastRequest)(nil),     // 8: ngame.gate.BroadcastRequest
+	(*BroadcastResponse)(nil),    // 9: ngame.gate.BroadcastResponse
+	(*KickRequest)(nil),          // 10: ngame.gate.KickRequest
+	(*KickResponse)(nil),         // 11: ngame.gate.KickResponse
+	(*MockCallRequest)(nil),      // 12: ngame.gate.MockCallRequest
+	(*MockCallResponse)(nil),     // 13: ngame.gate.MockCallResponse
+	(*SessionCountResponse)(nil), // 14: ngame.gate.SessionCountResponse
+	nil,                          // 15: ngame.gate.PushRequest.ValuesEntry
+	nil,                          // 16: ngame.gate.MultiPushRequest.ValuesEntry
+	nil,                          // 17: ngame.gate.BroadcastRequest.ValuesEntry
+	nil,                          // 18: ngame.gate.MockCallRequest.ValuesEntry
+	nil,                          // 19: ngame.gate.MockCallResponse.ValuesEntry
+	(*emptypb.Empty)(nil),        // 20: google.protobuf.Empty
 }
 var file_gate_protocol_gate_proto_depIdxs = []int32{
-	16, // 0: ngame.gate.PushRequest.values:type_name -> ngame.gate.PushRequest.ValuesEntry
+	15, // 0: ngame.gate.PushRequest.values:type_name -> ngame.gate.PushRequest.ValuesEntry
 	0,  // 1: ngame.gate.PushResponse.code:type_name -> ngame.gate.PushCode
-	3,  // 2: ngame.gate.MultiPushRequest.targets:type_name -> ngame.gate.SessionTarget
-	17, // 3: ngame.gate.MultiPushRequest.values:type_name -> ngame.gate.MultiPushRequest.ValuesEntry
-	3,  // 4: ngame.gate.PushResult.target:type_name -> ngame.gate.SessionTarget
-	0,  // 5: ngame.gate.PushResult.code:type_name -> ngame.gate.PushCode
-	7,  // 6: ngame.gate.MultiPushResponse.results:type_name -> ngame.gate.PushResult
-	18, // 7: ngame.gate.BroadcastRequest.values:type_name -> ngame.gate.BroadcastRequest.ValuesEntry
-	1,  // 8: ngame.gate.KickResponse.code:type_name -> ngame.gate.KickCode
-	19, // 9: ngame.gate.MockCallRequest.values:type_name -> ngame.gate.MockCallRequest.ValuesEntry
-	2,  // 10: ngame.gate.MockCallResponse.code:type_name -> ngame.gate.MockCallCode
-	20, // 11: ngame.gate.MockCallResponse.values:type_name -> ngame.gate.MockCallResponse.ValuesEntry
-	4,  // 12: ngame.gate.Gate.Push:input_type -> ngame.gate.PushRequest
-	6,  // 13: ngame.gate.Gate.MultiPush:input_type -> ngame.gate.MultiPushRequest
-	9,  // 14: ngame.gate.Gate.Broadcast:input_type -> ngame.gate.BroadcastRequest
-	11, // 15: ngame.gate.Gate.Kick:input_type -> ngame.gate.KickRequest
-	13, // 16: ngame.gate.Gate.MockCall:input_type -> ngame.gate.MockCallRequest
-	21, // 17: ngame.gate.Gate.SessionCount:input_type -> google.protobuf.Empty
-	5,  // 18: ngame.gate.Gate.Push:output_type -> ngame.gate.PushResponse
-	8,  // 19: ngame.gate.Gate.MultiPush:output_type -> ngame.gate.MultiPushResponse
-	10, // 20: ngame.gate.Gate.Broadcast:output_type -> ngame.gate.BroadcastResponse
-	12, // 21: ngame.gate.Gate.Kick:output_type -> ngame.gate.KickResponse
-	14, // 22: ngame.gate.Gate.MockCall:output_type -> ngame.gate.MockCallResponse
-	15, // 23: ngame.gate.Gate.SessionCount:output_type -> ngame.gate.SessionCountResponse
-	18, // [18:24] is the sub-list for method output_type
-	12, // [12:18] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	16, // 2: ngame.gate.MultiPushRequest.values:type_name -> ngame.gate.MultiPushRequest.ValuesEntry
+	0,  // 3: ngame.gate.PushResult.code:type_name -> ngame.gate.PushCode
+	6,  // 4: ngame.gate.MultiPushResponse.results:type_name -> ngame.gate.PushResult
+	17, // 5: ngame.gate.BroadcastRequest.values:type_name -> ngame.gate.BroadcastRequest.ValuesEntry
+	1,  // 6: ngame.gate.KickResponse.code:type_name -> ngame.gate.KickCode
+	18, // 7: ngame.gate.MockCallRequest.values:type_name -> ngame.gate.MockCallRequest.ValuesEntry
+	2,  // 8: ngame.gate.MockCallResponse.code:type_name -> ngame.gate.MockCallCode
+	19, // 9: ngame.gate.MockCallResponse.values:type_name -> ngame.gate.MockCallResponse.ValuesEntry
+	3,  // 10: ngame.gate.Gate.Push:input_type -> ngame.gate.PushRequest
+	5,  // 11: ngame.gate.Gate.MultiPush:input_type -> ngame.gate.MultiPushRequest
+	8,  // 12: ngame.gate.Gate.Broadcast:input_type -> ngame.gate.BroadcastRequest
+	10, // 13: ngame.gate.Gate.Kick:input_type -> ngame.gate.KickRequest
+	12, // 14: ngame.gate.Gate.MockCall:input_type -> ngame.gate.MockCallRequest
+	20, // 15: ngame.gate.Gate.SessionCount:input_type -> google.protobuf.Empty
+	4,  // 16: ngame.gate.Gate.Push:output_type -> ngame.gate.PushResponse
+	7,  // 17: ngame.gate.Gate.MultiPush:output_type -> ngame.gate.MultiPushResponse
+	9,  // 18: ngame.gate.Gate.Broadcast:output_type -> ngame.gate.BroadcastResponse
+	11, // 19: ngame.gate.Gate.Kick:output_type -> ngame.gate.KickResponse
+	13, // 20: ngame.gate.Gate.MockCall:output_type -> ngame.gate.MockCallResponse
+	14, // 21: ngame.gate.Gate.SessionCount:output_type -> ngame.gate.SessionCountResponse
+	16, // [16:22] is the sub-list for method output_type
+	10, // [10:16] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_gate_protocol_gate_proto_init() }
@@ -1092,7 +1001,7 @@ func file_gate_protocol_gate_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_gate_protocol_gate_proto_rawDesc), len(file_gate_protocol_gate_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   18,
+			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

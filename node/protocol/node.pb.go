@@ -22,14 +22,13 @@ const (
 )
 
 // CallRequest 由网关转发，Uid 从已认证 Session 获取。
-// GateId、SessionId 标识请求来源；目标 Node 由 RPC 定向路由选择。
+// GateId 标识请求来源网关；目标 Node 由 RPC 定向路由选择。
 // 客户端请求的 Seq 留在网关，由原 ReqContext 负责关联响应。
 type CallRequest struct {
-	state     protoimpl.MessageState `protogen:"open.v1"`
-	Uid       uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	GateId    string                 `protobuf:"bytes,2,opt,name=gate_id,json=gateId,proto3" json:"gate_id,omitempty"`
-	SessionId uint64                 `protobuf:"varint,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Route     uint32                 `protobuf:"varint,4,opt,name=route,proto3" json:"route,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Uid    uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	GateId string                 `protobuf:"bytes,2,opt,name=gate_id,json=gateId,proto3" json:"gate_id,omitempty"`
+	Route  uint32                 `protobuf:"varint,4,opt,name=route,proto3" json:"route,omitempty"`
 	// 对应 packet.Header.Values，键统一使用小写。
 	Values map[string]string `protobuf:"bytes,5,rep,name=values,proto3" json:"values,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// 业务明文；客户端协议的压缩、加密由网关 network 层处理。
@@ -80,13 +79,6 @@ func (x *CallRequest) GetGateId() string {
 		return x.GateId
 	}
 	return ""
-}
-
-func (x *CallRequest) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
-	}
-	return 0
 }
 
 func (x *CallRequest) GetRoute() uint32 {
@@ -176,12 +168,10 @@ var File_node_protocol_node_proto protoreflect.FileDescriptor
 const file_node_protocol_node_proto_rawDesc = "" +
 	"\n" +
 	"\x18node/protocol/node.proto\x12\n" +
-	"ngame.node\"\xf9\x01\n" +
+	"ngame.node\"\xda\x01\n" +
 	"\vCallRequest\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x17\n" +
-	"\agate_id\x18\x02 \x01(\tR\x06gateId\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x03 \x01(\x04R\tsessionId\x12\x14\n" +
+	"\agate_id\x18\x02 \x01(\tR\x06gateId\x12\x14\n" +
 	"\x05route\x18\x04 \x01(\rR\x05route\x12;\n" +
 	"\x06values\x18\x05 \x03(\v2#.ngame.node.CallRequest.ValuesEntryR\x06values\x12\x12\n" +
 	"\x04body\x18\x06 \x01(\fR\x04body\x1a9\n" +

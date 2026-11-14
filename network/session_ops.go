@@ -22,8 +22,8 @@ func (s *Server) ValidatePush(push *packet.Message) error {
 	})
 }
 
-// PushUidSession 捕获匹配的 Session，发送期间重连也不转投新会话。
-func (s *Server) PushUidSession(ctx context.Context, uid, sessionId uint64, push *packet.Message) error {
+// PushUid 捕获玩家当前连接；发送期间重连也不转投另一个连接。
+func (s *Server) PushUid(ctx context.Context, uid uint64, push *packet.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func (s *Server) PushUidSession(ctx context.Context, uid, sessionId uint64, push
 	s.mutex.RLock()
 	session := s.byUid[uid]
 	s.mutex.RUnlock()
-	if session == nil || session.Id != sessionId || session.ctx.Err() != nil {
+	if session == nil || session.ctx.Err() != nil {
 		return ErrNotBound
 	}
 	message := &packet.Message{
@@ -50,17 +50,27 @@ func (s *Server) PushUidSession(ctx context.Context, uid, sessionId uint64, push
 	return session.Conn.WriteContext(ctx, message)
 }
 
-func (s *Server) KickUidSession(uid, sessionId uint64) (bool, error) {
+func (s *Server) KickUid(uid uint64) (bool, error) {
 	s.mutex.RLock()
 	session := s.byUid[uid]
 	s.mutex.RUnlock()
-	if session == nil || session.Id != sessionId || session.ctx.Err() != nil {
+	if session == nil || session.ctx.Err() != nil {
 		return false, nil
 	}
-	session.cancel()
-	err := session.Conn.Close()
+	err := session.Close()
 	s.HandleClose(session.Conn)
 	return true, err
+}
+
+// Session 返回当前连接快照，调用方不得据此操作后来替换的新连接。
+func (s *Server) Session(uid uint64) *Session {
+	s.mutex.RLock()
+	session := s.byUid[uid]
+	s.mutex.RUnlock()
+	if session != nil && session.ctx.Err() == nil {
+		return session
+	}
+	return nil
 }
 
 func (s *Server) SessionCount() uint64 {
@@ -90,7 +100,7 @@ func (s *Server) Sessions() []*Session {
 // ExecuteSession 将业务明文与客户端请求排入同一个有界队列。
 // execute 在 Session 处理协程内运行，必须响应 ctx；不得在该协程中重入本方法。
 // 只有执行前确认目标会话不存在才返回 ErrNotBound，队列及取消错误不表示可以重放。
-func (s *Server) ExecuteSession(ctx context.Context, uid, sessionId uint64, request *packet.Message,
+func (s *Server) ExecuteSession(ctx context.Context, uid uint64, request *packet.Message,
 	execute func(context.Context, *Session, *packet.Message) error) error {
 	if execute == nil {
 		panic("network: 必须提供 Session 执行函数")
@@ -114,7 +124,7 @@ func (s *Server) ExecuteSession(ctx context.Context, uid, sessionId uint64, requ
 	if closed {
 		return ErrClosed
 	}
-	if session == nil || session.Id != sessionId || session.ctx.Err() != nil {
+	if session == nil || session.ctx.Err() != nil {
 		return ErrNotBound
 	}
 	size := int64(packet.HeaderSize + len(request.Body))

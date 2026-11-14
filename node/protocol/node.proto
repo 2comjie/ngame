@@ -5,12 +5,11 @@ package ngame.node;
 option go_package = "github.com/2comjie/ngame/node/protocol;protocol";
 
 // CallRequest 由网关转发，Uid 从已认证 Session 获取。
-// GateId、SessionId 标识请求来源；目标 Node 由 RPC 定向路由选择。
+// GateId 标识请求来源网关；目标 Node 由 RPC 定向路由选择。
 // 客户端请求的 Seq 留在网关，由原 ReqContext 负责关联响应。
 message CallRequest {
   uint64 uid = 1;
   string gate_id = 2;
-  uint64 session_id = 3;
   uint32 route = 4;
   // 对应 packet.Header.Values，键统一使用小写。
   map<string, string> values = 5;

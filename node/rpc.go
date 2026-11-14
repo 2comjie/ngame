@@ -22,8 +22,8 @@ func (n *App) Call(ctx context.Context, request *nodepb.CallRequest) (*nodepb.Ca
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	if request.Uid == 0 || request.GateId == "" || request.SessionId == 0 || request.Route == 0 {
-		return nil, status.Error(codes.InvalidArgument, "node: 必须提供 Uid、GateId、SessionId 和 Route")
+	if request.Uid == 0 || request.GateId == "" || request.Route == 0 {
+		return nil, status.Error(codes.InvalidArgument, "node: 必须提供 Uid、GateId 和 Route")
 	}
 	for key := range request.Values {
 		if key == "" || key != strings.ToLower(key) {

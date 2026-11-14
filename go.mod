@@ -12,6 +12,7 @@ require (
 	github.com/xtaci/kcp-go/v5 v5.6.72
 	go.etcd.io/etcd/api/v3 v3.7.3
 	go.etcd.io/etcd/client/v3 v3.7.3
+	golang.org/x/sync v0.24.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12
 )

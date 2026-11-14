@@ -22,8 +22,8 @@ type sessionCall struct {
 }
 
 type Session struct {
-	Id   uint64
-	Conn transport.Conn
+	order uint64 // 仅用于同一进程内拒绝迟到的旧连接绑定。
+	Conn  transport.Conn
 
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -46,4 +46,10 @@ func (s *Session) BoundAt() time.Time {
 		return time.Unix(0, value)
 	}
 	return time.Time{}
+}
+
+// Close 关闭这个连接对象，不影响同 Uid 后来建立的新连接。
+func (s *Session) Close() error {
+	s.cancel()
+	return s.Conn.Close()
 }

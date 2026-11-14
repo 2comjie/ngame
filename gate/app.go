@@ -2,9 +2,11 @@ package gate
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"maps"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,15 +16,17 @@ import (
 	"github.com/2comjie/ngame/network"
 	"github.com/2comjie/ngame/packet"
 	"github.com/2comjie/ngame/registry"
+	"github.com/2comjie/ngame/rpc"
 	"github.com/2comjie/ntool/logx"
 	"google.golang.org/grpc"
 )
 
 type Config struct {
+	// Instance.Id 是节点名前缀，实际实例 Id 每次构造时自动生成。
 	Instance       endpoint.ServiceInst
 	Registry       registry.Registry
 	Binder         *Binder
-	RPCServer      *grpc.Server
+	RPCOptions     []grpc.ServerOption
 	RPCListener    net.Listener
 	NetworkOptions []network.Option
 	Forward        ForwardFunc
@@ -43,6 +47,7 @@ type App struct {
 	registry        registry.Registry
 	registration    registry.Registration
 	binder          *Binder
+	bindings        [256]sync.Mutex
 	syncStarted     bool
 	syncDone        chan struct{}
 	rpcServer       *grpc.Server
@@ -66,8 +71,8 @@ var _ gatepb.GateServer = (*App)(nil)
 
 func New(config Config) *App {
 	config.Instance.Validate()
-	if config.Registry == nil || config.Binder == nil || config.RPCServer == nil || config.RPCListener == nil {
-		panic("gate: 必须提供 Registry、Binder、RPCServer 和 RPCListener")
+	if config.Registry == nil || config.Binder == nil || config.RPCListener == nil {
+		panic("gate: 必须提供 Registry、Binder 和 RPCListener")
 	}
 	if config.Forward == nil || config.ErrorHandler == nil {
 		panic("gate: 必须提供 Forward 和 ErrorHandler")
@@ -79,6 +84,7 @@ func New(config Config) *App {
 		panic("gate: StartupTimeout 必须大于0")
 	}
 	config.Instance.Meta = maps.Clone(config.Instance.Meta)
+	config.Instance.Id += "-" + rand.Text()
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &App{
 		App:            app.New(config.Components...),
@@ -86,7 +92,7 @@ func New(config Config) *App {
 		registry:       config.Registry,
 		binder:         config.Binder,
 		syncDone:       make(chan struct{}),
-		rpcServer:      config.RPCServer,
+		rpcServer:      rpc.NewServer(config.Instance.Id, config.RPCOptions...),
 		rpcListener:    config.RPCListener,
 		forward:        config.Forward,
 		errorHandler:   config.ErrorHandler,
@@ -107,6 +113,7 @@ func New(config Config) *App {
 
 func (g *App) Network() *network.Server { return g.server }
 func (g *App) Context() context.Context { return g.ctx }
+func (g *App) InstanceId() string       { return g.instance.Id }
 
 func (g *App) Start() (err error) {
 	if g.stopping.Load() || g.closed {
@@ -238,7 +245,6 @@ func (g *App) onReq(c *network.ReqContext) {
 	response, err := g.forward(c.Context, &Request{
 		Uid:       c.Session.Uid(),
 		GateId:    g.instance.Id,
-		SessionId: c.Session.Id,
 		NeedReply: c.NeedReply(),
 		Route:     c.Request.Header.Route,
 		Values:    c.Request.Header.Values,

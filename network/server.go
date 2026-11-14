@@ -133,7 +133,7 @@ func (s *Server) acceptLoop(listener transport.Listener) {
 		}
 		ctx, cancel := context.WithCancel(s.ctx)
 		s.sequence++
-		session := &Session{Id: s.sequence, Conn: conn, ctx: ctx, cancel: cancel, acceptedAt: time.Now(),
+		session := &Session{order: s.sequence, Conn: conn, ctx: ctx, cancel: cancel, acceptedAt: time.Now(),
 			queue: make(chan queuedMessage, s.options.requestQueue)}
 		s.byConn[conn] = session
 		s.unbound++
@@ -303,7 +303,7 @@ func (s *Server) handleBind(session *Session, request *packet.Message) {
 	}
 	s.mutex.Lock()
 	old := s.byUid[uid]
-	if s.closed || ctx.Err() != nil || session.ctx.Err() != nil || (old != nil && old.Id > session.Id) {
+	if s.closed || ctx.Err() != nil || session.ctx.Err() != nil || (old != nil && old.order > session.order) {
 		s.mutex.Unlock()
 		_ = session.Conn.Close()
 		return
@@ -342,21 +342,6 @@ func (s *Server) writeBindResponse(session *Session, code protocol.BindCode) err
 		return err
 	}
 	return session.Conn.WriteContext(session.ctx, &packet.Message{Header: packet.Header{Type: packet.BindRsp}, Body: body})
-}
-
-// PushUid 只向已认证的 Session 推送，自动设置消息类型和 Seq。
-func (s *Server) PushUid(ctx context.Context, uid uint64, push *packet.Message) error {
-	s.mutex.RLock()
-	session := s.byUid[uid]
-	s.mutex.RUnlock()
-	if session == nil || session.ctx.Err() != nil {
-		return ErrNotBound
-	}
-	message := &packet.Message{Header: packet.Header{Type: packet.Push, Route: push.Header.Route, Values: maps.Clone(push.Header.Values)}, Body: push.Body}
-	if err := encodeBody(s.options, message); err != nil {
-		return err
-	}
-	return session.Conn.WriteContext(ctx, message)
 }
 
 // Broadcast 向调用时所有已认证的Session推送，返回成功写入的连接数。
@@ -444,17 +429,6 @@ func (s *Server) pushSessions(ctx context.Context, sessions []*Session, push *pa
 		return success.Load(), ErrPushFailed
 	}
 	return success.Load(), nil
-}
-
-func (s *Server) KickUid(uid uint64) bool {
-	s.mutex.RLock()
-	session := s.byUid[uid]
-	s.mutex.RUnlock()
-	if session == nil {
-		return false
-	}
-	_ = session.Conn.Close()
-	return true
 }
 
 // RequestStop 开始关闭监听和连接，不等待 Session 回调退出。

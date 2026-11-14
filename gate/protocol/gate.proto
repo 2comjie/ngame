@@ -6,16 +6,10 @@ option go_package = "github.com/2comjie/ngame/gate/protocol;protocol";
 
 import "google/protobuf/empty.proto";
 
-// GateId 通过 RPC 定向路由选择，SessionId 必须来自该网关实例的会话归属。
-message SessionTarget {
-  uint64 uid = 1;
-  uint64 session_id = 2;
-}
-
 enum PushCode {
   // 已成功写入连接，不代表客户端已经收到或处理。
   PUSH_SENT = 0;
-  // 发送前确认会话不存在或不匹配；本目标未执行发送，可以重新定位。
+  // 发送前确认本节点没有该玩家的连接；本目标未执行发送，可以重新定位。
   PUSH_SESSION_NOT_HERE = 1;
   // 写入失败等原因导致无法确认是否投递，不得自动重放。
   PUSH_DELIVERY_UNKNOWN = 2;
@@ -23,7 +17,6 @@ enum PushCode {
 
 message PushRequest {
   uint64 uid = 1;
-  uint64 session_id = 2;
   uint32 route = 3;
   // 对应 packet.Header.Values，键统一使用小写。
   map<string, string> values = 4;
@@ -36,17 +29,16 @@ message PushResponse {
 }
 
 message MultiPushRequest {
-  // 调用方按 GateId 分组，只包含本次目标网关的会话。
-  // 实现按 Uid、SessionId 去重，同一目标最多发送一次。
-  repeated SessionTarget targets = 1;
   uint32 route = 2;
   map<string, string> values = 3;
   bytes body = 4;
+  // 调用方按 GateId 分组；按 Uid 去重，操作各玩家当前连接。
+  repeated uint64 uids = 5;
 }
 
 message PushResult {
-  SessionTarget target = 1;
   PushCode code = 2;
+  uint64 uid = 3;
 }
 
 message MultiPushResponse {
@@ -71,13 +63,12 @@ message BroadcastResponse {
 enum KickCode {
   // 目标会话已关闭，不表示业务退出回调已经完成。
   KICK_CLOSED = 0;
-  // 指定旧会话已经不存在；不重新定位去关闭新登录的会话。
+  // 本节点没有该玩家的连接。
   KICK_SESSION_NOT_HERE = 1;
 }
 
 message KickRequest {
   uint64 uid = 1;
-  uint64 session_id = 2;
 }
 
 message KickResponse {
@@ -86,13 +77,12 @@ message KickResponse {
 
 enum MockCallCode {
   MOCK_CALL_OK = 0;
-  // 进入业务处理前发现会话不存在或不匹配，可以重新定位。
+  // 进入业务处理前发现本节点没有该玩家的连接，可以重新定位。
   MOCK_CALL_SESSION_NOT_HERE = 1;
 }
 
 message MockCallRequest {
   uint64 uid = 1;
-  uint64 session_id = 2;
   uint32 route = 3;
   map<string, string> values = 4;
   bytes body = 5;

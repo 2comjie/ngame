@@ -20,10 +20,10 @@ func (g *App) Push(ctx context.Context, request *gatepb.PushRequest) (*gatepb.Pu
 	if g.ctx.Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
-	if request.Uid == 0 || request.SessionId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid、SessionId")
+	if request.Uid == 0 {
+		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid")
 	}
-	err := g.server.PushUidSession(ctx, request.Uid, request.SessionId, &packet.Message{
+	err := g.server.PushUid(ctx, request.Uid, &packet.Message{
 		Header: packet.Header{
 			Route:  request.Route,
 			Values: request.Values,
@@ -46,7 +46,7 @@ func (g *App) Push(ctx context.Context, request *gatepb.PushRequest) (*gatepb.Pu
 	if errors.Is(err, network.ErrBodyTooLarge) || errors.Is(err, packet.ErrRoute) || errors.Is(err, packet.ErrHeader) || errors.Is(err, packet.ErrFrameLength) {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	logx.Warnf("gate: 推送结果未知 uid=%d session=%d error=%v", request.Uid, request.SessionId, err)
+	logx.Warnf("gate: 推送结果未知 uid=%d error=%v", request.Uid, err)
 	return &gatepb.PushResponse{
 		Code: gatepb.PushCode_PUSH_DELIVERY_UNKNOWN,
 	}, nil
@@ -68,22 +68,18 @@ func (g *App) MultiPush(ctx context.Context, request *gatepb.MultiPushRequest) (
 	}); err != nil {
 		return nil, rpcError(err)
 	}
-	results := make([]*gatepb.PushResult, 0, len(request.Targets))
-	seen := make(map[[2]uint64]bool, len(request.Targets))
-	for _, target := range request.Targets {
-		if target == nil || target.Uid == 0 || target.SessionId == 0 {
-			return nil, status.Error(codes.InvalidArgument, "gate: 每个目标必须提供 Uid、SessionId")
+	results := make([]*gatepb.PushResult, 0, len(request.Uids))
+	seen := make(map[uint64]bool, len(request.Uids))
+	for _, uid := range request.Uids {
+		if uid == 0 {
+			return nil, status.Error(codes.InvalidArgument, "gate: 必须提供有效 Uid")
 		}
-		key := [2]uint64{target.Uid, target.SessionId}
-		if seen[key] {
+		if seen[uid] {
 			continue
 		}
-		seen[key] = true
+		seen[uid] = true
 		results = append(results, &gatepb.PushResult{
-			Target: &gatepb.SessionTarget{
-				Uid:       target.Uid,
-				SessionId: target.SessionId,
-			},
+			Uid:  uid,
 			Code: gatepb.PushCode_PUSH_DELIVERY_UNKNOWN,
 		})
 	}
@@ -100,15 +96,14 @@ func (g *App) MultiPush(ctx context.Context, request *gatepb.MultiPushRequest) (
 				}
 				result := results[index]
 				response, err := g.Push(ctx, &gatepb.PushRequest{
-					Uid:       result.Target.Uid,
-					SessionId: result.Target.SessionId,
-					Route:     request.Route,
-					Values:    request.Values,
-					Body:      request.Body,
+					Uid:    result.Uid,
+					Route:  request.Route,
+					Values: request.Values,
+					Body:   request.Body,
 				})
 				if err != nil {
 					if ctx.Err() == nil {
-						logx.Warnf("gate: 批量推送结果未知 uid=%d error=%v", result.Target.Uid, err)
+						logx.Warnf("gate: 批量推送结果未知 uid=%d error=%v", result.Uid, err)
 					}
 					continue
 				}
@@ -157,10 +152,10 @@ func (g *App) Kick(ctx context.Context, request *gatepb.KickRequest) (*gatepb.Ki
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	if request.Uid == 0 || request.SessionId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid、SessionId")
+	if request.Uid == 0 {
+		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid")
 	}
-	closed, err := g.server.KickUidSession(request.Uid, request.SessionId)
+	closed, err := g.server.KickUid(request.Uid)
 	if err != nil {
 		return nil, rpcError(err)
 	}
@@ -178,11 +173,11 @@ func (g *App) MockCall(ctx context.Context, request *gatepb.MockCallRequest) (*g
 	if g.ctx.Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
-	if request.Uid == 0 || request.SessionId == 0 {
-		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid、SessionId")
+	if request.Uid == 0 {
+		return nil, status.Error(codes.InvalidArgument, "gate: 必须提供 Uid")
 	}
 	var response *Response
-	err := g.server.ExecuteSession(ctx, request.Uid, request.SessionId, &packet.Message{
+	err := g.server.ExecuteSession(ctx, request.Uid, &packet.Message{
 		Header: packet.Header{
 			Type:   packet.Req,
 			Route:  request.Route,
@@ -195,7 +190,6 @@ func (g *App) MockCall(ctx context.Context, request *gatepb.MockCallRequest) (*g
 		response, err = g.forward(callCtx, &Request{
 			Uid:       session.Uid(),
 			GateId:    g.instance.Id,
-			SessionId: session.Id,
 			NeedReply: true,
 			Route:     message.Header.Route,
 			Values:    message.Header.Values,

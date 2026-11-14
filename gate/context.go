@@ -10,7 +10,6 @@ import (
 type Request struct {
 	Uid       uint64
 	GateId    string
-	SessionId uint64
 	NeedReply bool
 	Route     uint32
 	Values    map[string]string

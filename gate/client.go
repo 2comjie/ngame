@@ -20,11 +20,6 @@ var (
 
 const maxRouteRetries = 3
 
-type SessionRoute struct {
-	GateId    string `json:"gate_id"`
-	SessionId uint64 `json:"session_id"`
-}
-
 type Client struct {
 	rpcClient gatepb.GateClient
 	locator   *Locator
@@ -44,7 +39,7 @@ func (c *Client) Push(ctx context.Context, uid uint64, message *packet.Message) 
 	if uid == 0 {
 		return status.Error(codes.InvalidArgument, "gate: 必须提供 Uid")
 	}
-	route, found, err := c.locator.Locate(ctx, uid)
+	gateId, found, err := c.locator.Locate(ctx, uid)
 	if err != nil {
 		return err
 	}
@@ -52,38 +47,36 @@ func (c *Client) Push(ctx context.Context, uid uint64, message *packet.Message) 
 		if !found {
 			return ErrSessionNotHere
 		}
-		response, err := c.rpcClient.Push(rpc.WithInstance(ctx, route.GateId), &gatepb.PushRequest{
-			Uid:       uid,
-			SessionId: route.SessionId,
-			Route:     message.Header.Route,
-			Values:    message.Header.Values,
-			Body:      message.Body,
+		response, err := c.rpcClient.Push(rpc.WithInstance(ctx, gateId), &gatepb.PushRequest{
+			Uid:    uid,
+			Route:  message.Header.Route,
+			Values: message.Header.Values,
+			Body:   message.Body,
 		})
-		if err != nil {
-			if _, _, refreshErr := c.locator.Refresh(ctx, uid, route); refreshErr != nil {
-				logx.Warnf("gate: 推送失败后刷新归属失败 uid=%d error=%v", uid, refreshErr)
+		if err == nil {
+			switch response.Code {
+			case gatepb.PushCode_PUSH_SENT:
+				return nil
+			case gatepb.PushCode_PUSH_SESSION_NOT_HERE:
+				previous := gateId
+				gateId, found, err = c.locator.Refresh(ctx, uid, previous)
+				if err != nil {
+					return err
+				}
+				if attempt == maxRouteRetries || (found && gateId == previous) {
+					return ErrSessionNotHere
+				}
+				continue
+			case gatepb.PushCode_PUSH_DELIVERY_UNKNOWN:
+				err = ErrDeliveryUnknown
+			default:
+				return fmt.Errorf("gate: 不支持的 PushCode %d", response.Code)
 			}
-			return err
 		}
-		switch response.Code {
-		case gatepb.PushCode_PUSH_SENT:
-			return nil
-		case gatepb.PushCode_PUSH_DELIVERY_UNKNOWN:
-			if _, _, refreshErr := c.locator.Refresh(ctx, uid, route); refreshErr != nil {
-				logx.Warnf("gate: 投递结果未知时刷新归属失败 uid=%d error=%v", uid, refreshErr)
-			}
-			return ErrDeliveryUnknown
-		case gatepb.PushCode_PUSH_SESSION_NOT_HERE:
-			previous := route
-			route, found, err = c.locator.Refresh(ctx, uid, previous)
-			if err != nil {
-				return err
-			}
-			if attempt == maxRouteRetries || (found && route == previous) {
-				return ErrSessionNotHere
-			}
-		default:
-			return fmt.Errorf("gate: 不支持的 PushCode %d", response.Code)
+		// 通信错误或投递结果未知，只刷新后续调用的路由，不重发当前消息。
+		if _, _, refreshErr := c.locator.Refresh(ctx, uid, gateId); refreshErr != nil {
+			logx.Warnf("gate: 推送失败后刷新归属失败 uid=%d error=%v", uid, refreshErr)
 		}
+		return err
 	}
 }
