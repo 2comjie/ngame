@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/2comjie/ngame/app"
 	"github.com/2comjie/ntool/logx"
@@ -19,6 +20,8 @@ var (
 	ErrInvalidKey        = errors.New("actor: 必须提供 Type 和 Id")
 	ErrTypeNotRegistered = errors.New("actor: Actor 类型未注册")
 	ErrMailboxFull       = errors.New("actor: 邮箱已满")
+	ErrSelfAsk           = errors.New("actor: 不能在自己的回调中同步 Ask 自己")
+	ErrSelfWait          = errors.New("actor: 不能在自己的回调中同步等待主循环任务")
 	ErrInvalidTimer      = errors.New("actor: After 延迟不能为负数，Every 间隔必须大于 0")
 )
 
@@ -26,6 +29,47 @@ const stateStarting = 1
 const stateRunning = 2
 const stateStopping = 3
 const stateStopped = 4
+
+type options struct {
+	mailboxSize      int
+	updateInterval   time.Duration
+	lifecycleTimeout time.Duration
+}
+
+type Option func(*options)
+
+func defaultOptions() options {
+	return options{
+		mailboxSize:      128,
+		updateInterval:   time.Second,
+		lifecycleTimeout: 5 * time.Second,
+	}
+}
+
+func WithMailboxSize(size int) Option {
+	return func(o *options) { o.mailboxSize = size }
+}
+
+func WithUpdateInterval(interval time.Duration) Option {
+	return func(o *options) { o.updateInterval = interval }
+}
+
+// WithLifecycleTimeout 设置 Loader 与 OnStart 的共享超时，以及 OnStop 的超时
+func WithLifecycleTimeout(timeout time.Duration) Option {
+	return func(o *options) { o.lifecycleTimeout = timeout }
+}
+
+type actorType struct {
+	loader     Loader
+	onNotFound func(context.Context, Key) error
+}
+
+type TypeOption func(*actorType)
+
+// WithOnNotFound 仅在 Loader 返回 ErrEntityNotFound 时调用，成功后重新加载一次
+func WithOnNotFound(handler func(context.Context, Key) error) TypeOption {
+	return func(o *actorType) { o.onNotFound = handler }
+}
 
 type System struct {
 	guard    *Guard
@@ -98,9 +142,17 @@ func (s *System) Start() error {
 	return nil
 }
 
-// Spawn 本节点并发调用共享一次激活，跨节点通过 Guard 抢占。
-// ctx 只限制本次等待；Loader、OnStart 使用独立的生命周期上下文。
+// Spawn 本地合并激活，跨节点通过 Guard 抢占
+// ctx 仅限制等待，Loader 和 OnStart 使用独立上下文
 func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
+	r, err := s.spawn(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (s *System) spawn(ctx context.Context, key Key) (*runner, error) {
 	if key.Type == "" || key.Id == "" {
 		return nil, ErrInvalidKey
 	}
@@ -120,6 +172,10 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 			s.mutex.Unlock()
 			return nil, ErrTypeNotRegistered
 		}
+		if err := ctx.Err(); err != nil {
+			s.mutex.Unlock()
+			return nil, err
+		}
 		actorCtx, cancel := context.WithCancel(s.ctx)
 		r = &runner{
 			key:          key,
@@ -128,11 +184,12 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 			state:        stateStarting,
 			ctx:          actorCtx,
 			cancel:       cancel,
-			mailbox:      make(chan Task, s.options.mailboxSize),
+			mailbox:      make(chan *mailboxEntry, s.options.mailboxSize),
 			wake:         make(chan struct{}, 1),
 			done:         make(chan struct{}),
 			starting:     make(map[chan error]struct{}),
 		}
+		r.ctx = context.WithValue(actorCtx, executionContextKey{}, r)
 		s.actors[key] = r
 		s.wait.Add(1)
 		go s.run(r, definition)
@@ -145,7 +202,7 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 	}
 	if r.state >= stateStopping {
 		r.mu.Unlock()
-		return nil, ErrStopping
+		return r, ErrStopping
 	}
 	ready := make(chan error, 1)
 	r.starting[ready] = struct{}{}
@@ -153,7 +210,7 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 	select {
 	case err := <-ready:
 		if err != nil {
-			return nil, err
+			return r, err
 		}
 		return r, nil
 	case <-ctx.Done():
@@ -164,7 +221,7 @@ func (s *System) Spawn(ctx context.Context, key Key) (Handle, error) {
 	}
 }
 
-// Stop 请求正常退出并等待 OnStop 完成；ctx 超时不会放行同 Key 的新实例。
+// Stop 等待 OnStop 完成，超时不会放行新实例
 func (s *System) Stop(ctx context.Context, key Key) error {
 	s.mutex.Lock()
 	r := s.actors[key]
@@ -192,7 +249,7 @@ func (s *System) RequestStop() {
 		r.requestStop(StopReasonShutdown)
 	}
 	s.cancel()
-	// stopping 与 wait.Add 由同一把锁保护，开始 Wait 后不会新增激活任务。
+	// 锁内禁止新增激活后才能 Wait
 	go func() {
 		s.wait.Wait()
 		close(s.done)
@@ -215,7 +272,7 @@ func (s *System) run(r *runner, definition actorType) {
 	defer r.cancel()
 	var err error
 	defer func() {
-		// System 和 runner 同时加锁时始终先锁 System。
+		// 锁顺序固定为 System -> runner
 		s.mutex.Lock()
 		r.mu.Lock()
 		r.state = stateStopped
@@ -228,9 +285,7 @@ func (s *System) run(r *runner, definition actorType) {
 		s.mutex.Unlock()
 	}()
 
-	acquireCtx, stopAcquire := context.WithTimeout(r.ctx, s.options.lifecycleTimeout)
-	lease, owner, acquired, acquireErr := s.guard.TryAcquire(acquireCtx, r.key, r.activationId)
-	stopAcquire()
+	lease, owner, acquired, acquireErr := s.guard.TryAcquire(r.ctx, r.key, r.activationId)
 	if acquireErr != nil {
 		err = acquireErr
 		return
@@ -250,108 +305,5 @@ func (s *System) run(r *runner, definition actorType) {
 			logx.Errorf("actor: 释放激活租约失败 type=%s id=%s error=%v", r.key.Type, r.key.Id, releaseErr)
 		}
 	}()
-	stopLeaseWatch := context.AfterFunc(lease.ctx, func() { r.requestStop(StopReasonLeaseLost) })
-	defer stopLeaseWatch()
-	if !r.checkLease() {
-		err = ErrGuardLost
-		return
-	}
-	r.mu.Lock()
-	starting := r.state == stateStarting
-	r.mu.Unlock()
-	if !starting {
-		err = ErrStopping
-		return
-	}
-
-	startCtx, cancel := context.WithTimeout(r.ctx, s.options.lifecycleTimeout)
-	defer cancel()
-	value, err := definition.loader(startCtx, r.key)
-	if errors.Is(err, ErrEntityNotFound) && definition.onNotFound != nil {
-		if !r.checkLease() {
-			err = ErrGuardLost
-			return
-		}
-		if err = definition.onNotFound(startCtx, r.key); err != nil {
-			return
-		}
-		value, err = definition.loader(startCtx, r.key)
-	}
-	if err != nil {
-		return
-	}
-	if value == nil {
-		panic("actor: Loader 返回了空 Actor")
-	}
-	if !r.checkLease() {
-		err = ErrGuardLost
-		return
-	}
-	if err = startCtx.Err(); err != nil {
-		return
-	}
-	err = value.OnStart(StartContext{
-		Context: startCtx,
-		Self:    r,
-	})
-	started := err == nil
-	if started {
-		select {
-		case <-startCtx.Done():
-			err = startCtx.Err()
-		default:
-		}
-	}
-	cancel()
-	r.mu.Lock()
-	if !lease.Active() {
-		err = ErrGuardLost
-	} else if err == nil && r.state != stateStarting {
-		err = ErrStopping
-	}
-	if err == nil {
-		r.state = stateRunning
-		for ready := range r.starting {
-			ready <- nil
-			delete(r.starting, ready)
-		}
-	}
-	r.mu.Unlock()
-	if err == nil {
-		r.loop(value)
-	}
-	r.mu.Lock()
-	r.state = stateStopping
-	if !lease.Active() {
-		r.reason = StopReasonLeaseLost
-	} else if r.reason == 0 {
-		r.reason = StopReasonSelf
-	}
-	reason := r.reason
-	for _, timer := range r.timers {
-		timer.index = -1
-		timer.canceled = true
-		timer.task = nil
-	}
-	r.timers = nil
-	// 拒绝新任务后释放尚未执行的闭包，避免旧 Handle 长期保留业务对象。
-	for len(r.mailbox) > 0 {
-		<-r.mailbox
-	}
-	r.mu.Unlock()
-	if started {
-		stopCtx, stop := context.WithTimeout(context.Background(), s.options.lifecycleTimeout)
-		// 正常退出继续持有租约；失去租约时也取消正在执行的 OnStop。
-		stopWatch := context.AfterFunc(lease.ctx, stop)
-		if !lease.Active() {
-			stop()
-		}
-		value.OnStop(StopContext{
-			Context: stopCtx,
-			Self:    r,
-			Reason:  reason,
-		})
-		stopWatch()
-		stop()
-	}
+	err = r.run(definition)
 }

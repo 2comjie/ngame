@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package ngame.actor;
+
+option go_package = "github.com/2comjie/ngame/actor/internal/protocol;protocol";
+
+enum ActivationCode {
+  // Loader 与 OnStart 已成功完成
+  ACTIVATION_READY = 0;
+  // 已被其他激活占用；该归属可能仍在启动，须到 Owner 节点确认就绪
+  ACTIVATION_OWNED = 1;
+}
+
+message ActivateRequest {
+  string type = 1;
+  string id = 2;
+}
+
+message ActivateResponse {
+  ActivationCode code = 1;
+  string node_id = 2;
+  string activation_id = 3;
+}
+
+enum CallCode {
+  CALL_OK = 0;
+  // 入队前确认目标激活不在本节点，业务未执行，允许重新定位
+  CALL_NOT_HERE = 1;
+}
+
+message CallRequest {
+  string type = 1;
+  string id = 2;
+  // 必须与当前实例一致，防止旧路由误投给同 Key 的新实例
+  string activation_id = 3;
+  string method = 4;
+  bytes body = 5;
+}
+
+message CallResponse {
+  CallCode code = 1;
+  bytes body = 2;
+}
+
+// 所有方法只操作本节点，业务错误与超时通过 gRPC error 返回，不能据此重放
+service Actor {
+  rpc Activate(ActivateRequest) returns (ActivateResponse);
+  rpc Ask(CallRequest) returns (CallResponse);
+  // 成功只确认入队，不保证持久化或最终执行
+  rpc Tell(CallRequest) returns (CallResponse);
+}
