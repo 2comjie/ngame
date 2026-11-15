@@ -25,6 +25,12 @@ func (server *rpcServer) Activate(ctx context.Context, request *actorpb.Activate
 	key := Key{Type: request.Type, Id: request.Id}
 	for {
 		r, err := server.system.spawn(ctx, key)
+		if r == nil && errors.Is(err, ErrCapacity) {
+			return &actorpb.ActivateResponse{
+				Code:   actorpb.ActivationCode_ACTIVATION_BUSY,
+				NodeId: server.system.guard.nodeId,
+			}, nil
+		}
 		if owned, ok := errors.AsType[*OwnedError](err); ok {
 			return &actorpb.ActivateResponse{
 				Code:         actorpb.ActivationCode_ACTIVATION_OWNED,
@@ -99,7 +105,7 @@ func actorRPCError(err error) error {
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, ErrTypeNotRegistered):
 		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrMailboxFull):
+	case errors.Is(err, ErrMailboxFull), errors.Is(err, ErrCapacity):
 		return status.Error(codes.ResourceExhausted, err.Error())
 	case errors.Is(err, ErrGuardLost), errors.Is(err, ErrStopping), errors.Is(err, ErrStopped), errors.Is(err, ErrNotStarted):
 		return status.Error(codes.Unavailable, err.Error())

@@ -271,6 +271,10 @@ func TestSystemConfigurationAndStateBoundaries(t *testing.T) {
 	loader := func(context.Context, Key) (Actor, error) { return &loadedActor{}, nil }
 	for _, run := range []func(){
 		func() { New(nil) },
+		func() { New(guard, WithMaxActors(0)) },
+		func() { New(guard, WithMaxActors(-1)) },
+		func() { New(guard, WithMaxStarting(0)) },
+		func() { New(guard, WithMaxStarting(-1)) },
 		func() { New(guard, WithMailboxSize(0)) },
 		func() { New(guard, WithUpdateInterval(0)) },
 		func() { New(guard, WithLifecycleTimeout(0)) },
@@ -554,5 +558,267 @@ func TestConcurrentAutoCreate(t *testing.T) {
 	wait.Wait()
 	if creates.Load() != 1 {
 		t.Fatalf("并发自动创建次数=%d", creates.Load())
+	}
+}
+
+func TestActivationLimitsConcurrent(t *testing.T) {
+	for _, limits := range []struct {
+		name        string
+		maxActors   int
+		maxStarting int
+		accepted    int
+	}{
+		{"actor-count", 8, 16, 8},
+		{"starting-count", 32, 4, 4},
+	} {
+		for _, phase := range []string{"loader", "on-start"} {
+			t.Run(limits.name+"/"+phase, func(t *testing.T) {
+				_, client := loaderRedis(t)
+				const requests = 256
+				entered := make(chan struct{}, requests)
+				resume := make(chan struct{})
+				unblock := sync.OnceFunc(func() { close(resume) })
+				defer unblock()
+				var active, peak, loads atomic.Int32
+				var system *System
+				system = loaderSystem(t, NewGuard("node", client), func(ctx context.Context, key Key) (Actor, error) {
+					loads.Add(1)
+					current := active.Add(1)
+					for previous := peak.Load(); current > previous; previous = peak.Load() {
+						if peak.CompareAndSwap(previous, current) {
+							break
+						}
+					}
+					system.mutex.Lock()
+					count := len(system.actors)
+					system.mutex.Unlock()
+					if count > limits.maxActors || current > int32(limits.maxStarting) {
+						t.Errorf("突破限额 actors=%d starting=%d", count, current)
+					}
+					if phase == "loader" {
+						entered <- struct{}{}
+						select {
+						case <-resume:
+						case <-ctx.Done():
+							active.Add(-1)
+							return nil, ctx.Err()
+						}
+					}
+					return &loadedActor{onStart: func(ctx StartContext) error {
+						defer active.Add(-1)
+						if phase == "on-start" {
+							entered <- struct{}{}
+							select {
+							case <-resume:
+							case <-ctx.Done():
+								return ctx.Err()
+							}
+						}
+						return nil
+					}}, nil
+				}, WithMaxActors(limits.maxActors), WithMaxStarting(limits.maxStarting))
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				results := make(chan error, requests)
+				start := make(chan struct{})
+				for index := range requests {
+					go func() {
+						<-start
+						_, err := system.Spawn(ctx, Key{Type: "player", Id: fmt.Sprint(index)})
+						results <- err
+					}()
+				}
+				close(start)
+				for range limits.accepted {
+					select {
+					case <-entered:
+					case <-ctx.Done():
+						t.Fatal("未启动到预期数量", ctx.Err())
+					}
+				}
+				for range requests - limits.accepted {
+					select {
+					case err := <-results:
+						if !errors.Is(err, ErrCapacity) {
+							t.Fatalf("超额请求未立即拒绝: %v", err)
+						}
+					case <-ctx.Done():
+						t.Fatal("超额请求排队等待了名额", ctx.Err())
+					}
+				}
+				system.mutex.Lock()
+				count := len(system.actors)
+				system.mutex.Unlock()
+				if count != limits.accepted || loads.Load() != int32(limits.accepted) || peak.Load() != int32(limits.accepted) {
+					t.Fatalf("actors=%d loads=%d peak=%d", count, loads.Load(), peak.Load())
+				}
+				unblock()
+				for range limits.accepted {
+					if err := <-results; err != nil {
+						t.Fatal(err)
+					}
+				}
+				if active.Load() != 0 {
+					t.Fatal("启动回调未全部结束")
+				}
+				// 启动完成后可继续填满总名额，已运行的 Actor 不占启动名额
+				for index := range limits.maxActors - limits.accepted {
+					if _, err := system.Spawn(ctx, Key{Type: "player", Id: fmt.Sprint(requests + index)}); err != nil {
+						t.Fatal("启动名额未释放", err)
+					}
+				}
+				if _, err := system.Spawn(ctx, Key{Type: "player", Id: "overflow"}); !errors.Is(err, ErrCapacity) {
+					t.Fatal("运行中的实例未计入总上限", err)
+				}
+			})
+		}
+	}
+}
+
+func TestActivationLimitsSharedAndCancelledWaiter(t *testing.T) {
+	_, client := loaderRedis(t)
+	entered, resume := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	var loads atomic.Int32
+	system := loaderSystem(t, NewGuard("node", client), func(ctx context.Context, key Key) (Actor, error) {
+		if loads.Add(1) == 1 {
+			close(entered)
+			select {
+			case <-resume:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return &loadedActor{}, nil
+	}, WithMaxActors(1), WithMaxStarting(1))
+	key := Key{Type: "player", Id: "shared"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := make(chan error, 1)
+	go func() { _, err := system.Spawn(ctx, key); first <- err }()
+	waitLoader(t, entered)
+	cancel()
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "other"}); !errors.Is(err, ErrCapacity) {
+		t.Fatal("取消等待提前释放了名额", err)
+	}
+	const requests = 64
+	results := make(chan Handle, requests)
+	var wait sync.WaitGroup
+	for range requests {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			handle, err := system.Spawn(context.Background(), key)
+			if err != nil {
+				t.Error("满额时未复用同 Key", err)
+				return
+			}
+			results <- handle
+		}()
+	}
+	unblock()
+	wait.Wait()
+	close(results)
+	var shared Handle
+	for handle := range results {
+		if shared != nil && shared != handle {
+			t.Fatal("同 Key 返回不同实例")
+		}
+		shared = handle
+	}
+	if shared == nil || loads.Load() != 1 {
+		t.Fatalf("handle=%v loads=%d", shared, loads.Load())
+	}
+	if err := system.Stop(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "other"}); err != nil {
+		t.Fatal("停止后名额未释放", err)
+	}
+}
+
+func TestActivationLimitsReleaseOnFailure(t *testing.T) {
+	for _, phase := range []string{"guard", "owned", "loader", "on-start"} {
+		t.Run(phase, func(t *testing.T) {
+			_, client := loaderRedis(t)
+			failed := errors.New("激活失败")
+			key := Key{Type: "player", Id: "failed"}
+			if phase == "guard" {
+				var fail atomic.Bool
+				client.AddHook(commandHook(func(ctx context.Context, cmd redis.Cmder, next redis.ProcessHook) error {
+					if (cmd.Name() == "eval" || cmd.Name() == "evalsha") && !fail.Swap(true) {
+						return failed
+					}
+					return next(ctx, cmd)
+				}))
+			}
+			if phase == "owned" {
+				other := loaderSystem(t, NewGuard("other", client), func(context.Context, Key) (Actor, error) { return &loadedActor{}, nil })
+				if _, err := other.Spawn(context.Background(), key); err != nil {
+					t.Fatal(err)
+				}
+			}
+			system := loaderSystem(t, NewGuard("node", client), func(ctx context.Context, current Key) (Actor, error) {
+				if current == key && phase == "loader" {
+					return nil, failed
+				}
+				return &loadedActor{onStart: func(StartContext) error {
+					if current == key && phase == "on-start" {
+						return failed
+					}
+					return nil
+				}}, nil
+			}, WithMaxActors(1), WithMaxStarting(1))
+			_, err := system.Spawn(context.Background(), key)
+			if phase == "owned" {
+				if _, ok := errors.AsType[*OwnedError](err); !ok {
+					t.Fatal(err)
+				}
+			} else if !errors.Is(err, failed) {
+				t.Fatal(err)
+			}
+			if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "next"}); err != nil {
+				t.Fatal("失败后名额未归还", err)
+			}
+		})
+	}
+}
+
+func TestActivationLimitsHeldDuringStop(t *testing.T) {
+	_, client := loaderRedis(t)
+	entered, resume := make(chan struct{}), make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	system := loaderSystem(t, NewGuard("node", client), func(_ context.Context, key Key) (Actor, error) {
+		return &unloadActor{onStop: func(StopContext) {
+			if key.Id == "stopping" {
+				close(entered)
+				<-resume
+			}
+		}}, nil
+	}, WithMaxActors(1), WithMaxStarting(1))
+	key := Key{Type: "player", Id: "stopping"}
+	handle, err := system.Spawn(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle.Stop()
+	waitLoader(t, entered)
+	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "next"}); !errors.Is(err, ErrCapacity) {
+		t.Fatal("卸载完成前归还了名额", err)
+	}
+	if _, err := system.Spawn(context.Background(), key); !errors.Is(err, ErrStopping) {
+		t.Fatal("卸载中的同 Key 未返回 ErrStopping", err)
+	}
+	unblock()
+	if err := system.Stop(context.Background(), key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "next"}); err != nil {
+		t.Fatal("卸载完成后名额未归还", err)
 	}
 }

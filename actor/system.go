@@ -9,6 +9,7 @@ import (
 
 	"github.com/2comjie/ngame/app"
 	"github.com/2comjie/ntool/logx"
+	"golang.org/x/sync/semaphore"
 )
 
 var (
@@ -20,6 +21,7 @@ var (
 	ErrInvalidKey        = errors.New("actor: 必须提供 Type 和 Id")
 	ErrTypeNotRegistered = errors.New("actor: Actor 类型未注册")
 	ErrMailboxFull       = errors.New("actor: 邮箱已满")
+	ErrCapacity          = errors.New("actor: 节点激活容量已满")
 	ErrSelfAsk           = errors.New("actor: 不能在自己的回调中同步 Ask 自己")
 	ErrSelfWait          = errors.New("actor: 不能在自己的回调中同步等待主循环任务")
 	ErrInvalidTimer      = errors.New("actor: After 延迟不能为负数，Every 间隔必须大于 0")
@@ -31,6 +33,8 @@ const stateStopping = 3
 const stateStopped = 4
 
 type options struct {
+	maxActors        int
+	maxStarting      int
 	mailboxSize      int
 	updateInterval   time.Duration
 	lifecycleTimeout time.Duration
@@ -40,10 +44,22 @@ type Option func(*options)
 
 func defaultOptions() options {
 	return options{
+		maxActors:        10000,
+		maxStarting:      16,
 		mailboxSize:      128,
 		updateInterval:   time.Second,
 		lifecycleTimeout: 5 * time.Second,
 	}
+}
+
+// WithMaxActors 设置本节点实例上限，包含启动中和卸载中的实例，默认 10000
+func WithMaxActors(limit int) Option {
+	return func(o *options) { o.maxActors = limit }
+}
+
+// WithMaxStarting 设置并发激活上限，满额立即拒绝，默认 16
+func WithMaxStarting(limit int) Option {
+	return func(o *options) { o.maxStarting = limit }
 }
 
 func WithMailboxSize(size int) Option {
@@ -72,17 +88,18 @@ func WithOnNotFound(handler func(context.Context, Key) error) TypeOption {
 }
 
 type System struct {
-	guard    *Guard
-	mutex    sync.Mutex
-	types    map[string]actorType
-	actors   map[Key]*runner
-	options  options
-	ctx      context.Context
-	cancel   context.CancelFunc
-	started  bool
-	stopping bool
-	wait     sync.WaitGroup
-	done     chan struct{}
+	guard      *Guard
+	mutex      sync.Mutex
+	types      map[string]actorType
+	actors     map[Key]*runner
+	startSlots *semaphore.Weighted
+	options    options
+	ctx        context.Context
+	cancel     context.CancelFunc
+	started    bool
+	stopping   bool
+	wait       sync.WaitGroup
+	done       chan struct{}
 }
 
 var _ app.Component = (*System)(nil)
@@ -95,18 +112,19 @@ func New(guard *Guard, opts ...Option) *System {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if o.mailboxSize < 1 || o.updateInterval <= 0 || o.lifecycleTimeout <= 0 {
-		panic("actor: 邮箱容量、更新间隔和生命周期超时必须大于 0")
+	if o.maxActors < 1 || o.maxStarting < 1 || o.mailboxSize < 1 || o.updateInterval <= 0 || o.lifecycleTimeout <= 0 {
+		panic("actor: 实例上限、启动并发、邮箱容量、更新间隔和生命周期超时必须大于 0")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &System{
-		guard:   guard,
-		types:   make(map[string]actorType),
-		actors:  make(map[Key]*runner),
-		options: o,
-		ctx:     ctx,
-		cancel:  cancel,
-		done:    make(chan struct{}),
+		guard:      guard,
+		types:      make(map[string]actorType),
+		actors:     make(map[Key]*runner),
+		startSlots: semaphore.NewWeighted(int64(o.maxStarting)),
+		options:    o,
+		ctx:        ctx,
+		cancel:     cancel,
+		done:       make(chan struct{}),
 	}
 }
 
@@ -176,12 +194,18 @@ func (s *System) spawn(ctx context.Context, key Key) (*runner, error) {
 			s.mutex.Unlock()
 			return nil, err
 		}
+		// 检查与占位共用锁，同 Key 复用已有名额
+		if len(s.actors) >= s.options.maxActors || !s.startSlots.TryAcquire(1) {
+			s.mutex.Unlock()
+			return nil, ErrCapacity
+		}
 		actorCtx, cancel := context.WithCancel(s.ctx)
 		r = &runner{
 			key:          key,
 			activationId: rand.Text(),
 			options:      s.options,
 			state:        stateStarting,
+			startSlot:    s.startSlots,
 			ctx:          actorCtx,
 			cancel:       cancel,
 			mailbox:      make(chan *mailboxEntry, s.options.mailboxSize),
@@ -277,6 +301,10 @@ func (s *System) run(r *runner, definition actorType) {
 		r.mu.Lock()
 		r.state = stateStopped
 		delete(s.actors, r.key)
+		if r.startSlot != nil {
+			r.startSlot.Release(1)
+			r.startSlot = nil
+		}
 		for ready := range r.starting {
 			ready <- err
 			delete(r.starting, ready)

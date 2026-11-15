@@ -9,6 +9,8 @@ enum ActivationCode {
   ACTIVATION_READY = 0;
   // 已被其他激活占用；该归属可能仍在启动，须到 Owner 节点确认就绪
   ACTIVATION_OWNED = 1;
+  // 尚未占用归属或执行业务，允许选择其他节点
+  ACTIVATION_BUSY = 2;
 }
 
 message ActivateRequest {

@@ -28,6 +28,8 @@ const (
 	ActivationCode_ACTIVATION_READY ActivationCode = 0
 	// 已被其他激活占用；该归属可能仍在启动，须到 Owner 节点确认就绪
 	ActivationCode_ACTIVATION_OWNED ActivationCode = 1
+	// 尚未占用归属或执行业务，允许选择其他节点
+	ActivationCode_ACTIVATION_BUSY ActivationCode = 2
 )
 
 // Enum value maps for ActivationCode.
@@ -35,10 +37,12 @@ var (
 	ActivationCode_name = map[int32]string{
 		0: "ACTIVATION_READY",
 		1: "ACTIVATION_OWNED",
+		2: "ACTIVATION_BUSY",
 	}
 	ActivationCode_value = map[string]int32{
 		"ACTIVATION_READY": 0,
 		"ACTIVATION_OWNED": 1,
+		"ACTIVATION_BUSY":  2,
 	}
 )
 
@@ -377,10 +381,11 @@ const file_actor_internal_protocol_actor_proto_rawDesc = "" +
 	"\x04body\x18\x05 \x01(\fR\x04body\"M\n" +
 	"\fCallResponse\x12)\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x15.ngame.actor.CallCodeR\x04code\x12\x12\n" +
-	"\x04body\x18\x02 \x01(\fR\x04body*<\n" +
+	"\x04body\x18\x02 \x01(\fR\x04body*Q\n" +
 	"\x0eActivationCode\x12\x14\n" +
 	"\x10ACTIVATION_READY\x10\x00\x12\x14\n" +
-	"\x10ACTIVATION_OWNED\x10\x01**\n" +
+	"\x10ACTIVATION_OWNED\x10\x01\x12\x13\n" +
+	"\x0fACTIVATION_BUSY\x10\x02**\n" +
 	"\bCallCode\x12\v\n" +
 	"\aCALL_OK\x10\x00\x12\x11\n" +
 	"\rCALL_NOT_HERE\x10\x012\xc9\x01\n" +

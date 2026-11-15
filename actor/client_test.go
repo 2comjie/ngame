@@ -35,6 +35,12 @@ func newActorRPCNode(t *testing.T, client *redis.Client, id, service string, loa
 	for name, loader := range loaders {
 		system.Register(name, loader)
 	}
+	return startActorRPCNode(t, system, service, options...)
+}
+
+func startActorRPCNode(t *testing.T, system *System, service string, options ...grpc.ServerOption) *actorRPCNode {
+	t.Helper()
+	id := system.guard.nodeId
 	if err := system.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -457,10 +463,13 @@ func TestClientConfigurationFailures(t *testing.T) {
 }
 
 func TestActivationProtocolAndRetryBoundaries(t *testing.T) {
-	for _, mode := range []string{"invalid-owner", "invalid-code", "owned-loop", "owned-ready", "closed"} {
+	for _, mode := range []string{"invalid-owner", "invalid-code", "owned-loop", "owned-ready", "busy-no-node", "busy-discovery-closed", "closed"} {
 		t.Run(mode, func(t *testing.T) {
 			_, redisClient := loaderRedis(t)
 			caller := actorClient(t, redisClient, actorDiscover(t), map[string]string{"room": "game"})
+			if mode == "busy-discovery-closed" {
+				caller.discover.(*registry.Discovery).Close()
+			}
 			entered, resume := make(chan struct{}), make(chan struct{})
 			unblock := sync.OnceFunc(func() { close(resume) })
 			defer unblock()
@@ -479,6 +488,11 @@ func TestActivationProtocolAndRetryBoundaries(t *testing.T) {
 					if calls == 1 {
 						response.Code = actorpb.ActivationCode_ACTIVATION_OWNED
 					}
+				case "busy-no-node":
+					response.Code = actorpb.ActivationCode_ACTIVATION_BUSY
+					response.NodeId = ""
+				case "busy-discovery-closed":
+					response.Code = actorpb.ActivationCode_ACTIVATION_BUSY
 				case "closed":
 					close(entered)
 					<-ctx.Done()
@@ -499,6 +513,9 @@ func TestActivationProtocolAndRetryBoundaries(t *testing.T) {
 				return
 			}
 			owner, err := caller.activate(context.Background(), key, Owner{})
+			if mode == "busy-discovery-closed" && !errors.Is(err, registry.ErrDiscoveryClosed) {
+				t.Fatal("服务发现错误未返回", err)
+			}
 			if mode == "owned-ready" {
 				if err != nil || calls != 2 || owner.NodeId != "node" {
 					t.Fatalf("calls=%d owner=%v error=%v", calls, owner, err)
@@ -601,6 +618,7 @@ func TestActorRPCValidationAndErrorCodes(t *testing.T) {
 		{ErrInvalidKey, codes.InvalidArgument},
 		{ErrTypeNotRegistered, codes.FailedPrecondition},
 		{ErrMailboxFull, codes.ResourceExhausted},
+		{ErrCapacity, codes.ResourceExhausted},
 		{ErrNotStarted, codes.Unavailable},
 		{ErrStopped, codes.Unavailable},
 		{ErrStopping, codes.Unavailable},
@@ -610,6 +628,190 @@ func TestActorRPCValidationAndErrorCodes(t *testing.T) {
 		if got := status.Code(actorRPCError(tc.err)); got != tc.code {
 			t.Fatalf("error=%v code=%v want=%v", tc.err, got, tc.code)
 		}
+	}
+}
+
+func TestRPCActivationLimitsConcurrent(t *testing.T) {
+	_, redisClient := loaderRedis(t)
+	const requests = 256
+	entered := make(chan struct{}, requests)
+	resume := make(chan struct{})
+	unblock := sync.OnceFunc(func() { close(resume) })
+	defer unblock()
+	var loads atomic.Int32
+	system := New(NewGuard("node", redisClient), WithMaxActors(8), WithMaxStarting(4))
+	system.Register("room", func(ctx context.Context, key Key) (Actor, error) {
+		loads.Add(1)
+		entered <- struct{}{}
+		select {
+		case <-resume:
+			return &loadedActor{}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	})
+	node := startActorRPCNode(t, system, "game")
+	discover := actorDiscover(t, node)
+	callers := make([]*Client, 4)
+	for index := range callers {
+		callers[index] = actorClient(t, redisClient, discover, map[string]string{"room": "game"})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// 先完成连接，测试只衡量准入并发
+	for _, caller := range callers {
+		if _, err := caller.clients["room"].Ask(ctx, &actorpb.CallRequest{}, grpc.WaitForReady(true)); status.Code(err) != codes.InvalidArgument {
+			t.Fatal(err)
+		}
+	}
+	results := make(chan error, requests)
+	start := make(chan struct{})
+	for index := range requests {
+		go func() {
+			<-start
+			key := Key{Type: "room", Id: fmt.Sprint(index)}
+			var err error
+			if index%2 == 0 {
+				_, err = system.Spawn(ctx, key)
+			} else {
+				_, err = callers[index%len(callers)].activate(ctx, key, Owner{NodeId: node.instance.Id})
+			}
+			results <- err
+		}()
+	}
+	close(start)
+	for range 4 {
+		select {
+		case <-entered:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	for range requests - 4 {
+		select {
+		case err := <-results:
+			if !errors.Is(err, ErrCapacity) {
+				t.Fatal("超额请求未返回容量不足", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("超额请求未立即拒绝", ctx.Err())
+		}
+	}
+	if loads.Load() != 4 {
+		t.Fatalf("并发启动突破上限: loads=%d", loads.Load())
+	}
+	unblock()
+	for range 4 {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for index := range 4 {
+		if _, err := callers[index].activate(ctx, Key{Type: "room", Id: fmt.Sprintf("next-%d", index)}, Owner{NodeId: node.instance.Id}); err != nil {
+			t.Fatal("启动完成后名额未释放", err)
+		}
+	}
+	if _, err := callers[0].activate(ctx, Key{Type: "room", Id: "overflow"}, Owner{NodeId: node.instance.Id}); !errors.Is(err, ErrCapacity) {
+		t.Fatal("RPC 激活突破总数上限", err)
+	}
+	system.mutex.Lock()
+	count := len(system.actors)
+	system.mutex.Unlock()
+	if count != 8 || loads.Load() != 8 {
+		t.Fatalf("actors=%d loads=%d", count, loads.Load())
+	}
+}
+
+func TestActivationCapacityReroutes(t *testing.T) {
+	_, redisClient := loaderRedis(t)
+	var loads atomic.Int32
+	loader := func(context.Context, Key) (Actor, error) {
+		loads.Add(1)
+		return &loadedActor{}, nil
+	}
+	newNode := func(id string) *actorRPCNode {
+		system := New(NewGuard(id, redisClient), WithMaxActors(1), WithMaxStarting(1))
+		system.Register("room", loader)
+		return startActorRPCNode(t, system, "game")
+	}
+	a, b := newNode("game-a"), newNode("game-b")
+	key := Key{Type: "room", Id: "existing"}
+	handle, err := a.system.Spawn(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := actorClient(t, redisClient, actorDiscover(t, a, b), map[string]string{"room": "game"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	// 满额节点仍可确认已有激活
+	owner, err := caller.activate(ctx, key, Owner{NodeId: a.instance.Id})
+	if err != nil || owner.NodeId != a.instance.Id || owner.ActivationId != handle.ActivationId() {
+		t.Fatalf("满额时未复用已有实例: owner=%+v error=%v", owner, err)
+	}
+	owner, err = caller.activate(ctx, Key{Type: "room", Id: "new"}, Owner{NodeId: a.instance.Id})
+	if err != nil || owner.NodeId != b.instance.Id || loads.Load() != 2 {
+		t.Fatalf("未绕过满额节点: owner=%+v loads=%d error=%v", owner, loads.Load(), err)
+	}
+	if _, err := caller.activate(ctx, Key{Type: "room", Id: "overflow"}, Owner{NodeId: a.instance.Id}); !errors.Is(err, ErrCapacity) {
+		t.Fatal("全部满额未返回容量不足", err)
+	}
+	if loads.Load() != 2 {
+		t.Fatal("被拒绝的激活执行了 Loader")
+	}
+}
+
+func TestActivationCapacityRetryBounded(t *testing.T) {
+	_, redisClient := loaderRedis(t)
+	var requests atomic.Int32
+	var hitsMu sync.Mutex
+	hits := make(map[string]int)
+	nodes := make([]*actorRPCNode, 0, 4)
+	for index := range 4 {
+		id := fmt.Sprintf("game-%d", index)
+		system := New(NewGuard(id, redisClient), WithMaxActors(1))
+		system.Register("room", func(context.Context, Key) (Actor, error) { return &loadedActor{}, nil })
+		node := startActorRPCNode(t, system, "game", grpc.ChainUnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
+			if info.FullMethod == actorpb.Actor_Activate_FullMethodName {
+				requests.Add(1)
+				hitsMu.Lock()
+				hits[id]++
+				hitsMu.Unlock()
+			}
+			return next(ctx, req)
+		}))
+		if _, err := system.Spawn(context.Background(), Key{Type: "room", Id: id}); err != nil {
+			t.Fatal(err)
+		}
+		nodes = append(nodes, node)
+	}
+	caller := actorClient(t, redisClient, actorDiscover(t, nodes...), map[string]string{"room": "game"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := caller.activate(ctx, Key{Type: "room", Id: "overflow"}, Owner{NodeId: nodes[0].instance.Id}); !errors.Is(err, ErrCapacity) {
+		t.Fatal(err)
+	}
+	hitsMu.Lock()
+	defer hitsMu.Unlock()
+	if requests.Load() != maxRouteAttempts || len(hits) != maxRouteAttempts {
+		t.Fatalf("未限制不同节点的重试: requests=%d hits=%v", requests.Load(), hits)
+	}
+}
+
+func TestActivationCapacityBusinessErrorNotRetried(t *testing.T) {
+	_, redisClient := loaderRedis(t)
+	var calls atomic.Int32
+	loader := func(context.Context, Key) (Actor, error) {
+		calls.Add(1)
+		return &loadedActor{onStart: func(StartContext) error { return ErrCapacity }}, nil
+	}
+	a := newActorRPCNode(t, redisClient, "game-a", "game", map[string]Loader{"room": loader})
+	b := newActorRPCNode(t, redisClient, "game-b", "game", map[string]Loader{"room": loader})
+	caller := actorClient(t, redisClient, actorDiscover(t, a, b), map[string]string{"room": "game"})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := caller.activate(ctx, Key{Type: "room", Id: "business-error"}, Owner{NodeId: a.instance.Id})
+	if status.Code(err) != codes.ResourceExhausted || calls.Load() != 1 {
+		t.Fatalf("业务错误触发了换节点重试: calls=%d error=%v", calls.Load(), err)
 	}
 }
 

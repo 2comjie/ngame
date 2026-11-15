@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 type runner struct {
@@ -15,6 +17,7 @@ type runner struct {
 	options      options
 	mu           sync.Mutex
 	state        int
+	startSlot    *semaphore.Weighted
 	reason       StopReason
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -262,6 +265,8 @@ func (r *runner) run(definition actorType) error {
 	}
 	if err == nil {
 		r.state = stateRunning
+		r.startSlot.Release(1)
+		r.startSlot = nil
 		for ready := range r.starting {
 			ready <- nil
 			delete(r.starting, ready)
