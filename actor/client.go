@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math/rand/v2"
 	"time"
 
 	actorpb "github.com/2comjie/ngame/actor/internal/protocol"
-	"github.com/2comjie/ngame/endpoint"
 	"github.com/2comjie/ngame/registry"
 	"github.com/2comjie/ngame/rpc"
 	"github.com/2comjie/ntool/logx"
@@ -19,12 +17,16 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-var ErrRouteChanged = errors.New("actor: 路由连续变化，重试次数已用尽")
+var (
+	ErrRouteChanged    = errors.New("actor: 路由连续变化，重试次数已用尽")
+	ErrNoAvailableNode = errors.New("actor: 没有可用的激活节点")
+)
 
 const maxRouteAttempts = 3
 
 type clientOptions struct {
 	activationTimeout time.Duration
+	loadMaxAge        time.Duration
 	dialOptions       []grpc.DialOption
 }
 
@@ -47,6 +49,7 @@ type Client struct {
 	clients           map[string]actorpb.ActorClient // Actor Type -> RPC Client
 	connections       map[string]*grpc.ClientConn    // Service Name -> 共享连接
 	activationTimeout time.Duration
+	loadMaxAge        time.Duration
 	activations       singleflight.Group
 	ctx               context.Context
 	cancel            context.CancelFunc
@@ -56,12 +59,12 @@ func NewClient(discover registry.Discover, locator *Locator, services map[string
 	if discover == nil || locator == nil || len(services) == 0 {
 		panic("actor: Client 必须提供 Discover、Locator 和 Actor 类型到服务名的映射")
 	}
-	o := clientOptions{activationTimeout: 5 * time.Second}
+	o := clientOptions{activationTimeout: 5 * time.Second, loadMaxAge: 10 * time.Second}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	if o.activationTimeout <= 0 {
-		panic("actor: 激活超时必须大于 0")
+	if o.activationTimeout <= 0 || o.loadMaxAge <= 0 {
+		panic("actor: 激活超时和负载有效期必须大于 0")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Client{
@@ -71,6 +74,7 @@ func NewClient(discover registry.Discover, locator *Locator, services map[string
 		clients:           make(map[string]actorpb.ActorClient, len(services)),
 		connections:       make(map[string]*grpc.ClientConn),
 		activationTimeout: o.activationTimeout,
+		loadMaxAge:        o.loadMaxAge,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -115,11 +119,17 @@ func (c *Client) activate(ctx context.Context, key Key, previous Owner) (Owner, 
 		rejected := make(map[string]bool)
 		request := &actorpb.ActivateRequest{Type: key.Type, Id: key.Id}
 		for attempt := range maxRouteAttempts {
-			targetCtx := callCtx
-			if owner.NodeId != "" {
-				targetCtx = rpc.WithInstance(callCtx, owner.NodeId)
+			if owner.NodeId == "" {
+				nodeId, err := c.selectNode(callCtx, key.Type, rejected)
+				if err != nil {
+					if errors.Is(err, ErrNoAvailableNode) && len(rejected) > 0 {
+						return nil, ErrCapacity
+					}
+					return nil, err
+				}
+				owner.NodeId = nodeId
 			}
-			response, err := c.clients[key.Type].Activate(targetCtx, request)
+			response, err := c.clients[key.Type].Activate(rpc.WithInstance(callCtx, owner.NodeId), request)
 			if err != nil {
 				return nil, err
 			}
@@ -131,25 +141,7 @@ func (c *Client) activate(ctx context.Context, key Key, previous Owner) (Owner, 
 				if attempt == maxRouteAttempts-1 {
 					return nil, ErrCapacity
 				}
-				instances, err := c.discover.List(callCtx, c.services[key.Type])
-				if err != nil {
-					return nil, err
-				}
 				owner = Owner{}
-				var total float64
-				for _, instance := range instances {
-					if rejected[instance.Id] || instance.Status != endpoint.Working || instance.Weight == 0 {
-						continue
-					}
-					weight := float64(instance.Weight)
-					total += weight
-					if rand.Float64()*total < weight {
-						owner.NodeId = instance.Id
-					}
-				}
-				if owner.NodeId == "" {
-					return nil, ErrCapacity
-				}
 				continue
 			}
 			owner = Owner{NodeId: response.NodeId, ActivationId: response.ActivationId}

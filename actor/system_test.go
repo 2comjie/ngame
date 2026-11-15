@@ -646,9 +646,11 @@ func TestActivationLimitsConcurrent(t *testing.T) {
 						t.Fatal("超额请求排队等待了名额", ctx.Err())
 					}
 				}
-				system.mutex.Lock()
-				count := len(system.actors)
-				system.mutex.Unlock()
+				load := system.Stats()
+				count := load.ActorCount
+				if load.ActorLimit != limits.maxActors {
+					t.Fatal("上报上限与准入上限不一致", load)
+				}
 				if count != limits.accepted || loads.Load() != int32(limits.accepted) || peak.Load() != int32(limits.accepted) {
 					t.Fatalf("actors=%d loads=%d peak=%d", count, loads.Load(), peak.Load())
 				}
@@ -808,6 +810,9 @@ func TestActivationLimitsHeldDuringStop(t *testing.T) {
 	}
 	handle.Stop()
 	waitLoader(t, entered)
+	if load := system.Stats(); load.ActorCount != 1 || load.ActorLimit != 1 {
+		t.Fatal("上报漏计了卸载中的 Actor", load)
+	}
 	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "next"}); !errors.Is(err, ErrCapacity) {
 		t.Fatal("卸载完成前归还了名额", err)
 	}
@@ -817,6 +822,9 @@ func TestActivationLimitsHeldDuringStop(t *testing.T) {
 	unblock()
 	if err := system.Stop(context.Background(), key); err != nil {
 		t.Fatal(err)
+	}
+	if load := system.Stats(); load.ActorCount != 0 {
+		t.Fatal("上报仍包含已释放的 Actor", load)
 	}
 	if _, err := system.Spawn(context.Background(), Key{Type: "player", Id: "next"}); err != nil {
 		t.Fatal("卸载完成后名额未归还", err)

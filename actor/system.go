@@ -70,7 +70,7 @@ func WithUpdateInterval(interval time.Duration) Option {
 	return func(o *options) { o.updateInterval = interval }
 }
 
-// WithLifecycleTimeout 设置 Loader 与 OnStart 的共享超时，以及 OnStop 的超时
+// WithLifecycleTimeout 限制加载与启动、停止回调
 func WithLifecycleTimeout(timeout time.Duration) Option {
 	return func(o *options) { o.lifecycleTimeout = timeout }
 }
@@ -93,6 +93,7 @@ type System struct {
 	types      map[string]actorType
 	actors     map[Key]*runner
 	startSlots *semaphore.Weighted
+	admission  func() bool
 	options    options
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -103,6 +104,21 @@ type System struct {
 }
 
 var _ app.Component = (*System)(nil)
+
+type SystemStats struct {
+	ActorCount int
+	ActorLimit int
+}
+
+// Stats 包含启动中和卸载中仍占名额的 Actor
+func (s *System) Stats() SystemStats {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	return SystemStats{
+		ActorCount: len(s.actors),
+		ActorLimit: s.options.maxActors,
+	}
+}
 
 func New(guard *Guard, opts ...Option) *System {
 	if guard == nil {
@@ -195,7 +211,7 @@ func (s *System) spawn(ctx context.Context, key Key) (*runner, error) {
 			return nil, err
 		}
 		// 检查与占位共用锁，同 Key 复用已有名额
-		if len(s.actors) >= s.options.maxActors || !s.startSlots.TryAcquire(1) {
+		if len(s.actors) >= s.options.maxActors || (s.admission != nil && !s.admission()) || !s.startSlots.TryAcquire(1) {
 			s.mutex.Unlock()
 			return nil, ErrCapacity
 		}

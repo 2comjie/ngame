@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"strings"
 	"sync"
@@ -80,7 +81,25 @@ func actorDiscover(t *testing.T, nodes ...*actorRPCNode) registry.Discover {
 	t.Helper()
 	instances := make([]endpoint.ServiceInst, 0, len(nodes))
 	for _, node := range nodes {
-		instances = append(instances, node.instance)
+		instance := node.instance
+		instance.Meta = maps.Clone(instance.Meta)
+		if instance.Meta == nil {
+			instance.Meta = make(map[string]string)
+		}
+		if instance.Meta[NodeLoadMetaKey] == "" {
+			stats := node.system.Stats()
+			load := NodeLoad{
+				ActorCount: stats.ActorCount,
+				ActorLimit: stats.ActorLimit,
+				SampledAt:  time.Now(),
+			}
+			value, err := json.Marshal(load)
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance.Meta[NodeLoadMetaKey] = string(value)
+		}
+		instances = append(instances, instance)
 	}
 	discover := registry.NewDiscover(func(ctx context.Context, publish func([]endpoint.ServiceInst)) error {
 		publish(instances)
@@ -453,6 +472,7 @@ func TestClientConfigurationFailures(t *testing.T) {
 		func() { _, _ = NewClient(discover, nil, services) },
 		func() { _, _ = NewClient(discover, locator, nil) },
 		func() { _, _ = NewClient(discover, locator, services, WithActivationTimeout(0)) },
+		func() { _, _ = NewClient(discover, locator, services, WithLoadMaxAge(0)) },
 		func() { _, _ = NewClient(discover, locator, map[string]string{"room": ""}) },
 	} {
 		assertPanic(t, run)
@@ -504,7 +524,7 @@ func TestActivationProtocolAndRetryBoundaries(t *testing.T) {
 			key := Key{Type: "room", Id: "1"}
 			if mode == "closed" {
 				result := make(chan error, 1)
-				go func() { _, err := caller.activate(context.Background(), key, Owner{}); result <- err }()
+				go func() { _, err := caller.activate(context.Background(), key, Owner{NodeId: "node"}); result <- err }()
 				waitLoader(t, entered)
 				_ = caller.Close()
 				if err := <-result; !errors.Is(err, ErrStopped) {
@@ -512,7 +532,7 @@ func TestActivationProtocolAndRetryBoundaries(t *testing.T) {
 				}
 				return
 			}
-			owner, err := caller.activate(context.Background(), key, Owner{})
+			owner, err := caller.activate(context.Background(), key, Owner{NodeId: "node"})
 			if mode == "busy-discovery-closed" && !errors.Is(err, registry.ErrDiscoveryClosed) {
 				t.Fatal("服务发现错误未返回", err)
 			}
@@ -782,6 +802,12 @@ func TestActivationCapacityRetryBounded(t *testing.T) {
 		if _, err := system.Spawn(context.Background(), Key{Type: "room", Id: id}); err != nil {
 			t.Fatal(err)
 		}
+		// 模拟上报尚未反映本节点已满，验证节点自身的硬拒绝
+		value, err := json.Marshal(NodeLoad{ActorLimit: 1, SampledAt: time.Now()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.instance.Meta = map[string]string{NodeLoadMetaKey: string(value)}
 		nodes = append(nodes, node)
 	}
 	caller := actorClient(t, redisClient, actorDiscover(t, nodes...), map[string]string{"room": "game"})

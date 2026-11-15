@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -309,6 +310,11 @@ func TestRefProcessCrashAndRestartAtSameAddress(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance := endpoint.ServiceInst{Id: oldId, Name: "game", RpcHost: host, RpcPort: cast.ToInt(port), Weight: 1}
+	load, err := json.Marshal(NodeLoad{ActorLimit: 10000, SampledAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.Meta = map[string]string{NodeLoadMetaKey: string(load)}
 	updates := make(chan []endpoint.ServiceInst, 1)
 	discover := registry.NewDiscover(func(ctx context.Context, publish func([]endpoint.ServiceInst)) error {
 		publish([]endpoint.ServiceInst{instance})

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +37,7 @@ type App struct {
 	instance        endpoint.ServiceInst
 	registry        registry.Registry
 	registration    registry.Registration
+	metaMu          sync.Mutex
 	rpcServer       *grpc.Server
 	rpcListener     net.Listener
 	handler         HandlerFunc
@@ -88,6 +90,25 @@ func New(config Config) *App {
 
 func (n *App) Context() context.Context { return n.ctx }
 
+// ReportMeta 合并元信息，注册前暂存，注册后串行更新当前注册
+func (n *App) ReportMeta(ctx context.Context, values map[string]string) error {
+	n.metaMu.Lock()
+	defer n.metaMu.Unlock()
+	if n.stopping.Load() {
+		return app.ErrClosed
+	}
+	meta := make(map[string]string, len(n.instance.Meta)+len(values))
+	maps.Copy(meta, n.instance.Meta)
+	maps.Copy(meta, values)
+	if n.registration != nil {
+		if err := n.registration.UpdateMeta(ctx, meta); err != nil {
+			return err
+		}
+	}
+	n.instance.Meta = meta
+	return nil
+}
+
 func (n *App) Start() (err error) {
 	if n.stopping.Load() || n.closed {
 		return app.ErrClosed
@@ -118,7 +139,10 @@ func (n *App) Start() (err error) {
 	}()
 	ctx, cancel := context.WithTimeout(n.ctx, n.startupTimeout)
 	defer cancel()
-	if n.registration, err = n.registry.Register(ctx, n.instance); err != nil {
+	n.metaMu.Lock()
+	n.registration, err = n.registry.Register(ctx, n.instance)
+	n.metaMu.Unlock()
+	if err != nil {
 		return err
 	}
 	if err = n.ctx.Err(); err != nil {
