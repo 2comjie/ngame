@@ -56,6 +56,7 @@ type dataField struct {
 	Name           string
 	RuntimeName    string
 	DiffIndex      uint32
+	Scope          string
 	Kind           fieldKind
 	KeyType        string
 	ValueType      string
@@ -74,6 +75,7 @@ type dataField struct {
 	ProtoGoType   string
 	ChildCodec    string
 	ChildName     string
+	FilterFunc    string
 	UpdateIndexes [4]uint32
 
 	key   types.Type
@@ -225,9 +227,12 @@ func (config config) generate() error {
 				CSharpNamespace: "Ngame.Generated." + strings.Join(namespace, "."),
 			}
 			packageImports := map[string]string{
-				diffPackagePath:  "diff",
-				source.GoPackage: "pbData",
-				"encoding/json":  "json",
+				diffPackagePath:                    "diff",
+				source.GoPackage:                   "pbData",
+				"encoding/json":                    "json",
+				"maps":                             "maps",
+				"slices":                           "slices",
+				"google.golang.org/protobuf/proto": "proto",
 			}
 			addImport := func(path, name string) string {
 				if alias, exists := packageImports[path]; exists {
@@ -255,7 +260,7 @@ func (config config) generate() error {
 						return ""
 					}
 
-					return addImport(valuePkg.Path(), valuePkg.Name())
+					return addImport(valuePkg.Path(), "pkg"+strcase.UpperCamelCase(valuePkg.Name()))
 				})
 			}
 
@@ -362,6 +367,16 @@ func (config config) generate() error {
 							DiffIndex:   uint32(diffIndex),
 							Tag:         structure.Tag(index),
 							ProtoName:   strcase.SnakeCase(field.Name()),
+						}
+						switch scope := reflect.StructTag(structure.Tag(index)).Get("sync"); scope {
+						case "public":
+							model.Scope = "diff.Public"
+						case "private":
+							model.Scope = "diff.Private"
+						case "", "server":
+							model.Scope = "diff.Server"
+						default:
+							panic("diffgen: unknown sync scope " + scope + " on " + data.Name + "." + field.Name())
 						}
 						for segment := range model.UpdateIndexes {
 							model.UpdateIndexes[segment] = uint32(diffIndex) + uint32(segment+1)*1000
@@ -480,6 +495,7 @@ func (config config) generate() error {
 							}
 
 							model.ProtoType = named.Obj().Name()
+							model.FilterFunc = strings.TrimSuffix(typeString(named), named.Obj().Name()) + "Filter" + named.Obj().Name()
 							if instances[named] != nil {
 								model.ChildName = named.Obj().Name()
 								if named.Obj().Pkg().Path() != pkg.PkgPath {

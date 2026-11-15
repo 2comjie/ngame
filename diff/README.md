@@ -12,13 +12,14 @@
 package model
 
 type Player struct {
-    Id    int64           `diff:"1"`
-    Hp    int32           `diff:"2"`
-    Items map[int64]*Item `diff:"3"`
+    Id        int64           `diff:"1" sync:"public"`
+    Hp        int32           `diff:"2" sync:"public"`
+    Items     map[int64]*Item `diff:"3" sync:"private"`
+    RewardLog map[int64]int64 `diff:"4" sync:"server"`
 }
 
 type Item struct {
-    Count int64 `diff:"1"`
+    Count int64 `diff:"1" sync:"private"`
 }
 ```
 
@@ -70,6 +71,38 @@ replica.Merge(update)
 - Slice 的修改及其元素的子字段修改均输出整个列表。
 - 同一位置反复修改由 Writer 合并；不与旧基线比较，改回原值仍会输出一次设置。
 - `LoadSnapshot()` 恢复全量和父链接，不记录变化。重置基线前由调用方处理已有待提交变化。
+
+## 字段分类与过滤
+
+参与同步的字段可标注 `sync:"public"`、`sync:"private"` 或 `sync:"server"`。未标注时默认 `server`；拼错分类时生成器直接 panic。`diff:"-"` 的字段完全不参与 Proto 和 JSON 导出。
+
+| Scope | 内容 |
+| --- | --- |
+| `diff.Public` | 对其他玩家可见的公开字段 |
+| `diff.Public \| diff.Private` | 自己可见的公开和私有字段 |
+| `diff.Server` | 仅服务端分类的字段 |
+| `diff.All` | 三类字段，用于完整存档或服务间同步 |
+
+生成器为每个具体类型提供 `Filter类型名(data, scope)`。过滤函数接收全量或增量 Proto，返回独立的副本；不会修改输入、清理 Writer，也不会复制未知 Proto 字段。输入为 nil 时返回 nil。
+
+```go
+// 进入视野时使用全量，Scope 由业务决定。
+baseline := player.Snapshot()
+publicFull := model.FilterPlayer(baseline, diff.Public)
+ownerFull := model.FilterPlayer(baseline, diff.Public|diff.Private)
+
+// 每轮只 Commit 一次，再为不同用途过滤同一份增量。
+update := player.Commit()
+publicUpdate := model.FilterPlayer(update, diff.Public)
+ownerUpdate := model.FilterPlayer(update, diff.Public|diff.Private)
+saveUpdate := model.FilterPlayer(update, diff.All)
+```
+
+过滤同时作用于普通字段、对象、Map、Slice 及所有增量操作。父字段不可见时，其整条子树都不可见；可见父字段内仍按各子字段分类过滤。整体对象设置、Map 元素设置和列表替换中的内容也会递归过滤。对象创建和容器结构会保留，只有过滤后为空的嵌套更新会被移除。
+
+无可见数据时返回空 Proto。对于增量，调用方可用 `proto.Size(publicUpdate) == 0` 判断是否跳过发送；全量中的空对象仍可能是有效基线。
+
+`Public` 不代表全地图广播。AOI 负责选择观察者，业务按观察者身份选择 Scope，diff 仅负责字段过滤。版本号、消息发送和重连恢复仍由上层负责。若客户端和存档频率不同，上层需保存或合并每轮提交的增量，不能等存档时再次 Commit 获取已清除的变化。
 
 ## 对象与生命周期
 

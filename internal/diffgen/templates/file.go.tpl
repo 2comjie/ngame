@@ -173,5 +173,6 @@ func (value *{{.Name}}{{.TypeArgs}}) DiffField(index uint32) any {
 {{end}}
 }
 {{template "updates" .}}
+{{template "filter" .}}
 {{end}}
 {{end}}
