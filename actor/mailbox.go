@@ -23,7 +23,25 @@ type messageResult struct {
 }
 
 // execute 在主循环执行，返回是否更新活跃时间
-func (r *runner) execute(value Actor, entry *mailboxEntry) bool {
+func (r *runner) execute(value Actor, entry *mailboxEntry) (executed bool) {
+	var body []byte
+	var err error
+	defer func() {
+		recovered := recover()
+		if recovered != nil {
+			callback := "Task"
+			if entry.task == nil {
+				callback = "OnMessage/" + entry.message.Method
+			}
+			err = r.panicError(callback, recovered)
+			executed = false
+		}
+		if entry.reply != nil {
+			entry.reply <- messageResult{body: bytes.Clone(body), err: err}
+		} else if err != nil && recovered == nil {
+			logx.Errorf("actor: 异步任务失败 type=%s id=%s method=%s error=%v", r.key.Type, r.key.Id, entry.message.Method, err)
+		}
+	}()
 	ctx := r.ctx
 	if entry.reply != nil {
 		// 同步调用响应双方取消；异步任务只跟随 Actor 生命周期
@@ -33,20 +51,14 @@ func (r *runner) execute(value Actor, entry *mailboxEntry) bool {
 		defer cancel()
 		ctx = context.WithValue(callCtx, executionContextKey{}, r)
 	}
-	err := ctx.Err()
-	executed := err == nil
-	var body []byte
+	err = ctx.Err()
+	executed = err == nil
 	if executed {
 		if entry.task != nil {
 			err = entry.task(ctx)
 		} else {
 			body, err = value.OnMessage(MessageContext{Context: ctx, Self: r}, entry.message)
 		}
-	}
-	if entry.reply != nil {
-		entry.reply <- messageResult{body: bytes.Clone(body), err: err}
-	} else if err != nil {
-		logx.Errorf("actor: 异步任务失败 type=%s id=%s method=%s error=%v", r.key.Type, r.key.Id, entry.message.Method, err)
 	}
 	return executed
 }
@@ -58,6 +70,12 @@ func (r *runner) waitResult(ctx context.Context, reply <-chan messageResult) ([]
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-r.ctx.Done():
+		r.mu.Lock()
+		reason := r.reason
+		r.mu.Unlock()
+		if reason == StopReasonPanic {
+			return nil, ErrPanic
+		}
 		if !r.lease.Active() {
 			return nil, ErrGuardLost
 		}

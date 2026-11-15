@@ -107,6 +107,8 @@ func actorRPCError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, ErrMailboxFull), errors.Is(err, ErrCapacity):
 		return status.Error(codes.ResourceExhausted, err.Error())
+	case errors.Is(err, ErrPanic):
+		return status.Error(codes.Internal, err.Error())
 	case errors.Is(err, ErrGuardLost), errors.Is(err, ErrStopping), errors.Is(err, ErrStopped), errors.Is(err, ErrNotStarted):
 		return status.Error(codes.Unavailable, err.Error())
 	default:

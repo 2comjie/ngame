@@ -16,6 +16,7 @@ type Actor interface {
 	OnMessage(ctx MessageContext, message Message) ([]byte, error)
 	// OnUpdate 返回 0 使用默认更新间隔，返回负数停止自动 Update
 	OnUpdate(ctx UpdateContext) time.Duration
+	// OnStop 仅在 OnStart 成功后调用，Panic 原因下应清理资源，避免保存损坏状态
 	OnStop(ctx StopContext)
 }
 
@@ -87,4 +88,5 @@ const (
 	StopReasonSelf      StopReason = 1
 	StopReasonShutdown  StopReason = 2
 	StopReasonLeaseLost StopReason = 3
+	StopReasonPanic     StopReason = 4
 )

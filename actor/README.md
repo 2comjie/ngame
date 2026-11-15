@@ -139,6 +139,14 @@ Ref 只保存 Key 和 Client，路由存在 Locator 中，因此节点切换或�
   Tell。Actor 通过 `ctx.Self.Stop()` 请求停止自己。
 - 先关闭 Client，再关闭 Locator；共享的 Discover 与 Redis 由上层关闭。
 
+## Panic 隔离
+
+Loader、OnNotFound、生命周期、消息和主循环任务的 panic 会停止当前激活，记录 Actor Key、ActivationId 和堆栈，取消定时任务并清理排队消息。同步等待者收到 `ErrPanic`，远程调用对应 `codes.Internal`，本次消息不自动重放。
+
+OnStart 成功后才会调用 OnStop。运行期间发生 panic 时，OnStop 收到 `StopReasonPanic`，应释放资源，避免保存可能损坏的状态。OnStart 失败或 panic 时，由业务清理未完成的初始化；OnStop 自身 panic 仍会释放租约和容量名额。
+
+清理结束前继续持有租约，之后可通过同一个 Ref 重新激活。业务自行启动的 goroutine 需要自行处理 panic。
+
 ## 本地主循环任务
 
 Actor 在生命周期和消息回调中通过 `ctx.Self` 获得当前激活实例的 Handle。它支持 Stop、 After、Every，以及不等待结果的

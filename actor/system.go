@@ -22,6 +22,7 @@ var (
 	ErrTypeNotRegistered = errors.New("actor: Actor 类型未注册")
 	ErrMailboxFull       = errors.New("actor: 邮箱已满")
 	ErrCapacity          = errors.New("actor: 节点激活容量已满")
+	ErrPanic             = errors.New("actor: 业务回调发生 panic")
 	ErrSelfAsk           = errors.New("actor: 不能在自己的回调中同步 Ask 自己")
 	ErrSelfWait          = errors.New("actor: 不能在自己的回调中同步等待主循环任务")
 	ErrInvalidTimer      = errors.New("actor: After 延迟不能为负数，Every 间隔必须大于 0")
@@ -272,6 +273,12 @@ func (s *System) Stop(ctx context.Context, key Key) error {
 	r.Stop()
 	select {
 	case <-r.done:
+		r.mu.Lock()
+		reason := r.reason
+		r.mu.Unlock()
+		if reason == StopReasonPanic {
+			return ErrPanic
+		}
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

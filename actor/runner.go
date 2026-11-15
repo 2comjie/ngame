@@ -4,9 +4,13 @@ import (
 	"container/heap"
 	"context"
 	"errors"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 
+	"github.com/2comjie/ntool/logx"
+	"github.com/2comjie/ntool/logx/logdef"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -56,22 +60,43 @@ func (r *runner) requestStop(reason StopReason) {
 		r.state = stateStopping
 		r.reason = reason
 		r.wakeLoop()
-		stopErr := ErrStopping
-		if reason == StopReasonLeaseLost {
-			stopErr = ErrGuardLost
-		}
+		stopErr := stopError(reason)
 		r.drainMailbox(stopErr)
 		for ready := range r.starting {
 			ready <- stopErr
 			delete(r.starting, ready)
 		}
 	}
-	if reason == StopReasonLeaseLost {
+	if reason == StopReasonPanic || reason == StopReasonLeaseLost && r.reason != StopReasonPanic {
 		r.reason = reason
 	}
 	if reason != StopReasonSelf {
 		r.cancel()
 	}
+}
+
+func stopError(reason StopReason) error {
+	switch reason {
+	case StopReasonPanic:
+		return ErrPanic
+	case StopReasonLeaseLost:
+		return ErrGuardLost
+	default:
+		return ErrStopping
+	}
+}
+
+func (r *runner) panicError(callback string, value any) error {
+	r.requestStop(StopReasonPanic)
+	logx.WithFields(logdef.Fields{
+		"type":          r.key.Type,
+		"id":            r.key.Id,
+		"activation_id": r.activationId,
+		"callback":      callback,
+		"panic":         fmt.Sprint(value),
+		"stack":         string(debug.Stack()),
+	}).Error("actor: 业务回调 panic，停止当前激活")
+	return ErrPanic
 }
 
 var _ Handle = (*runner)(nil)
@@ -90,6 +115,15 @@ func (r *runner) loop(value Actor) {
 	timer := time.NewTimer(r.options.updateInterval)
 	defer timer.Stop()
 	var batch []*actorTimer
+	defer func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		// 到期任务已移出堆，异常退出时仍需释放闭包
+		for _, scheduled := range batch {
+			scheduled.canceled = true
+			scheduled.task = nil
+		}
+	}()
 	for {
 		if !r.checkLease() {
 			return
@@ -210,10 +244,64 @@ func (r *runner) loop(value Actor) {
 	}
 }
 
-func (r *runner) run(definition actorType) error {
+func (r *runner) run(definition actorType) (err error) {
 	lease := r.lease
 	stopLeaseWatch := context.AfterFunc(lease.ctx, func() { r.requestStop(StopReasonLeaseLost) })
 	defer stopLeaseWatch()
+	var value Actor
+	var started bool
+	callback := ""
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if callback == "" {
+				panic(recovered)
+			}
+			err = r.panicError(callback, recovered)
+		}
+		r.mu.Lock()
+		r.state = stateStopping
+		if r.reason != StopReasonPanic {
+			if !lease.Active() {
+				r.reason = StopReasonLeaseLost
+			} else if r.reason == 0 {
+				r.reason = StopReasonSelf
+			}
+		}
+		reason := r.reason
+		if reason == StopReasonPanic && err == nil {
+			err = ErrPanic
+		}
+		for _, timer := range r.timers {
+			timer.index = -1
+			timer.canceled = true
+			timer.task = nil
+		}
+		r.timers = nil
+		r.drainMailbox(stopError(reason))
+		r.mu.Unlock()
+		if !started {
+			return
+		}
+		// 清理完成前持有租约，租约失效时取消 OnStop
+		stopCtx, stop := context.WithTimeout(lease.ctx, r.options.lifecycleTimeout)
+		defer stop()
+		if !lease.Active() {
+			stop()
+		}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				stopErr := r.panicError("OnStop", recovered)
+				if err == nil {
+					err = stopErr
+				}
+			}
+		}()
+		value.OnStop(StopContext{
+			Context: context.WithValue(stopCtx, executionContextKey{}, r),
+			Self:    r,
+			Reason:  reason,
+		})
+	}()
 	if !r.checkLease() {
 		return ErrGuardLost
 	}
@@ -226,15 +314,22 @@ func (r *runner) run(definition actorType) error {
 
 	startCtx, cancel := context.WithTimeout(r.ctx, r.options.lifecycleTimeout)
 	defer cancel()
-	value, err := definition.loader(startCtx, r.key)
+	callback = "Loader"
+	value, err = definition.loader(startCtx, r.key)
+	callback = ""
 	if errors.Is(err, ErrEntityNotFound) && definition.onNotFound != nil {
 		if !r.checkLease() {
 			return ErrGuardLost
 		}
-		if err = definition.onNotFound(startCtx, r.key); err != nil {
+		callback = "OnNotFound"
+		err = definition.onNotFound(startCtx, r.key)
+		callback = ""
+		if err != nil {
 			return err
 		}
+		callback = "Loader"
 		value, err = definition.loader(startCtx, r.key)
+		callback = ""
 	}
 	if err != nil {
 		return err
@@ -248,11 +343,13 @@ func (r *runner) run(definition actorType) error {
 	if err = startCtx.Err(); err != nil {
 		return err
 	}
+	callback = "OnStart"
 	err = value.OnStart(StartContext{
 		Context: startCtx,
 		Self:    r,
 	})
-	started := err == nil
+	callback = ""
+	started = err == nil
 	if started {
 		err = startCtx.Err()
 	}
@@ -274,37 +371,8 @@ func (r *runner) run(definition actorType) error {
 	}
 	r.mu.Unlock()
 	if err == nil {
+		callback = "MainLoop"
 		r.loop(value)
-	}
-	r.mu.Lock()
-	r.state = stateStopping
-	if !lease.Active() {
-		r.reason = StopReasonLeaseLost
-	} else if r.reason == 0 {
-		r.reason = StopReasonSelf
-	}
-	reason := r.reason
-	for _, timer := range r.timers {
-		timer.index = -1
-		timer.canceled = true
-		timer.task = nil
-	}
-	r.timers = nil
-	// 清理排队闭包，避免旧 Handle 持有业务对象
-	r.drainMailbox(ErrStopping)
-	r.mu.Unlock()
-	if started {
-		// 保存完成前持有租约，租约失效时取消 OnStop
-		stopCtx, stop := context.WithTimeout(lease.ctx, r.options.lifecycleTimeout)
-		if !lease.Active() {
-			stop()
-		}
-		value.OnStop(StopContext{
-			Context: context.WithValue(stopCtx, executionContextKey{}, r),
-			Self:    r,
-			Reason:  reason,
-		})
-		stop()
 	}
 	return err
 }
