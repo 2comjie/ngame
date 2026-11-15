@@ -88,7 +88,21 @@ func New(config Config) *App {
 	return n
 }
 
-func (n *App) Context() context.Context { return n.ctx }
+func (n *App) Context() context.Context    { return n.ctx }
+func (n *App) InstanceId() string          { return n.instance.Id }
+func (n *App) Registry() registry.Registry { return n.registry }
+
+// RPCServer 供启动前注册业务 RPC
+func (n *App) RPCServer() *grpc.Server { return n.rpcServer }
+
+// Instance 返回独立快照，元信息通过 ReportMeta 更新
+func (n *App) Instance() endpoint.ServiceInst {
+	n.metaMu.Lock()
+	defer n.metaMu.Unlock()
+	instance := n.instance
+	instance.Meta = maps.Clone(instance.Meta)
+	return instance
+}
 
 // ReportMeta 合并元信息，注册前暂存，注册后串行更新当前注册
 func (n *App) ReportMeta(ctx context.Context, values map[string]string) error {

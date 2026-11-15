@@ -111,9 +111,20 @@ func New(config Config) *App {
 	return g
 }
 
-func (g *App) Network() *network.Server { return g.server }
-func (g *App) Context() context.Context { return g.ctx }
-func (g *App) InstanceId() string       { return g.instance.Id }
+func (g *App) Network() *network.Server    { return g.server }
+func (g *App) Context() context.Context    { return g.ctx }
+func (g *App) InstanceId() string          { return g.instance.Id }
+func (g *App) Registry() registry.Registry { return g.registry }
+
+// RPCServer 供启动前注册业务 RPC
+func (g *App) RPCServer() *grpc.Server { return g.rpcServer }
+
+// Instance 返回包含实际进程 Id 的独立快照
+func (g *App) Instance() endpoint.ServiceInst {
+	instance := g.instance
+	instance.Meta = maps.Clone(instance.Meta)
+	return instance
+}
 
 func (g *App) Start() (err error) {
 	if g.stopping.Load() || g.closed {

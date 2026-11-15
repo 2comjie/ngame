@@ -154,6 +154,8 @@ func TestReportMetaConcurrent(t *testing.T) {
 				if err := n.ReportMeta(ctx, map[string]string{fmt.Sprintf("%s-%d", prefix, index): "one"}); err != nil {
 					t.Error(err)
 				}
+				snapshot := n.Instance()
+				snapshot.Meta["zone"] = "outside"
 			}()
 		}
 		close(start)
@@ -167,6 +169,9 @@ func TestReportMetaConcurrent(t *testing.T) {
 		t.Fatal("注册前并发上报丢失字段", len(center.instance.Meta))
 	}
 	report("after")
+	if snapshot := n.Instance(); len(snapshot.Meta) != 129 || snapshot.Meta["zone"] != "one" {
+		t.Fatal("读取或修改实例快照影响了节点元信息", snapshot.Meta)
+	}
 	center.registration.mutex.Lock()
 	defer center.registration.mutex.Unlock()
 	if len(center.registration.meta) != 129 {
@@ -217,7 +222,7 @@ func TestActorReportsLoadThroughNode(t *testing.T) {
 		actor.WithLoadInterval(5*time.Millisecond),
 	)
 	system.Register("room", func(context.Context, actor.Key) (actor.Actor, error) { return &loadActor{}, nil })
-	system.RegisterRPC(n.rpcServer)
+	system.RegisterRPC(n.RPCServer())
 	n.AddComponent(system)
 	n.AddComponent(reporter)
 	if err := n.Start(); err != nil {

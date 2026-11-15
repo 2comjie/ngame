@@ -227,7 +227,7 @@ func TestUidGateRestartProtectsNewInstance(t *testing.T) {
 	if old.app.InstanceId() == current.app.InstanceId() {
 		t.Fatal("相同节点名前缀复用了实例 Id")
 	}
-	if registered := current.app.registry.(*uidRegistry).instance.Id; registered != current.app.InstanceId() {
+	if registered := current.app.Registry().(*uidRegistry).instance.Id; registered != current.app.Instance().Id {
 		t.Fatalf("注册 Id 与运行 Id 不同: %s", registered)
 	}
 	if err := old.app.binder.Unbind(context.Background(), 42, old.app.InstanceId()); err != nil {
@@ -243,7 +243,7 @@ func TestUidGateRestartProtectsNewInstance(t *testing.T) {
 	if err != nil || !found || gateId != current.app.InstanceId() {
 		t.Fatalf("旧进程改动了新归属: gate=%s found=%v error=%v", gateId, found, err)
 	}
-	conn, err := grpc.NewClient(current.app.rpcListener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(current.app.Instance().RpcTarget(), grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
 	}
