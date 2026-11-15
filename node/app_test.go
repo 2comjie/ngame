@@ -15,7 +15,6 @@ import (
 	"github.com/2comjie/ngame/actor"
 	"github.com/2comjie/ngame/app"
 	"github.com/2comjie/ngame/endpoint"
-	nodepb "github.com/2comjie/ngame/node/protocol"
 	"github.com/2comjie/ngame/registry"
 	"github.com/2comjie/ngame/rpc"
 	"github.com/alicebob/miniredis/v2"
@@ -97,9 +96,6 @@ func nodeApp(t *testing.T, center *metaRegistry) *App {
 		Registry:    center,
 		RPCServer:   rpc.NewServer("node"),
 		RPCListener: listener,
-		Handler: func(context.Context, *nodepb.CallRequest) (*nodepb.CallResponse, error) {
-			return &nodepb.CallResponse{}, nil
-		},
 	})
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

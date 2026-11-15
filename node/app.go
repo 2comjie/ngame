@@ -11,7 +11,6 @@ import (
 
 	"github.com/2comjie/ngame/app"
 	"github.com/2comjie/ngame/endpoint"
-	nodepb "github.com/2comjie/ngame/node/protocol"
 	"github.com/2comjie/ngame/registry"
 	"github.com/2comjie/ntool/logx"
 	"google.golang.org/grpc"
@@ -22,16 +21,14 @@ type Config struct {
 	Registry    registry.Registry
 	RPCServer   *grpc.Server
 	RPCListener net.Listener
-	Handler     HandlerFunc
 	Components  []app.Component
 	// StartupTimeout 限制注册操作及启动失败后的清理，默认各 5 秒。
 	StartupTimeout time.Duration
 }
 
-// App 管理业务组件、Node RPC 与本次服务注册，生命周期方法由应用入口串行调用。
+// App 管理业务组件、RPC 服务与当前注册，生命周期方法由入口串行调用
 // Context 取消表示停止或服务失效，调用方应随后执行 Shutdown。
 type App struct {
-	nodepb.UnimplementedNodeServer
 	*app.App
 
 	instance        endpoint.ServiceInst
@@ -40,7 +37,6 @@ type App struct {
 	metaMu          sync.Mutex
 	rpcServer       *grpc.Server
 	rpcListener     net.Listener
-	handler         HandlerFunc
 	startupTimeout  time.Duration
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -54,15 +50,11 @@ type App struct {
 }
 
 var _ app.Component = (*App)(nil)
-var _ nodepb.NodeServer = (*App)(nil)
 
 func New(config Config) *App {
 	config.Instance.Validate()
 	if config.Registry == nil || config.RPCServer == nil || config.RPCListener == nil {
 		panic("node: 必须提供 Registry、RPCServer 和 RPCListener")
-	}
-	if config.Handler == nil {
-		panic("node: 必须提供 Handler")
 	}
 	if config.StartupTimeout == 0 {
 		config.StartupTimeout = 5 * time.Second
@@ -78,13 +70,11 @@ func New(config Config) *App {
 		registry:       config.Registry,
 		rpcServer:      config.RPCServer,
 		rpcListener:    config.RPCListener,
-		handler:        config.Handler,
 		startupTimeout: config.StartupTimeout,
 		ctx:            ctx,
 		cancel:         cancel,
 		rpcDone:        make(chan struct{}),
 	}
-	nodepb.RegisterNodeServer(n.rpcServer, n)
 	return n
 }
 
