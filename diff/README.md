@@ -104,6 +104,8 @@ saveUpdate := model.FilterPlayer(update, diff.All)
 
 `Public` 不代表全地图广播。AOI 负责选择观察者，业务按观察者身份选择 Scope，diff 仅负责字段过滤。版本号、消息发送和重连恢复仍由上层负责。若客户端和存档频率不同，上层需保存或合并每轮提交的增量，不能等存档时再次 Commit 获取已清除的变化。
 
+客户端状态同步可接入 [replica](../replica/README.md)，由其统一管理 Commit、订阅基线、增量历史、确认、补发和全量恢复；业务通过 Observe/Unobserve 接入 AOI。
+
 ## 对象与生命周期
 
 允许多个位置引用同一个子对象，变化沿所有父链接传播；不允许循环引用。`AddParent()` 在挂接时检查所有祖先，包括 Map、Slice 和绑定了 Writer 的节点，发现循环直接 panic。

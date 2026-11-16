@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package ngame.replica;
+
+option go_package = "github.com/2comjie/ngame/replica/protocol";
+option csharp_namespace = "Ngame.Replica";
+
+message EntityKey {
+  string type = 1;
+  string id = 2;
+}
+
+message Owner {
+  EntityKey actor = 1;
+  string activation_id = 2;
+}
+
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_INITIAL = 1;
+  KIND_DELTA = 2;
+  KIND_RESET = 3;
+  KIND_REMOVE = 4;
+}
+
+// 同一订阅内 sequence 单调递增；补发保持原 sequence。
+// DELTA 的 updates 按顺序表示 base_version 到 version 的每次变化。
+message Frame {
+  Owner owner = 1;
+  string session_id = 2;
+  EntityKey entity = 3;
+  uint64 subscription_id = 4;
+  uint64 sequence = 5;
+  uint32 scope = 6;
+  Kind kind = 7;
+  uint64 base_version = 8;
+  uint64 version = 9;
+  bytes snapshot = 10;
+  repeated bytes updates = 11;
+}
+
+// 客户端仅在成功应用消息后确认，sequence 为该订阅已应用的消息序号。
+message Ack {
+  Owner owner = 1;
+  string session_id = 2;
+  EntityKey entity = 3;
+  uint64 subscription_id = 4;
+  uint64 sequence = 5;
+}
+
+message ResetRequest {
+  Owner owner = 1;
+  string session_id = 2;
+  EntityKey entity = 3;
+  uint64 subscription_id = 4;
+}
