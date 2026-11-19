@@ -3,8 +3,10 @@ package app
 import "context"
 
 type Component interface {
+	// Start 失败时组件自行清理这次启动申请的资源
 	Start() error
 	RequestStop()
+	// Shutdown 等待组件退出，调用超时后可再次等待
 	Shutdown(context.Context) error
 }
 

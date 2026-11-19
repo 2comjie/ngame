@@ -3,6 +3,7 @@ module github.com/2comjie/ngame
 go 1.27.3
 
 require (
+	github.com/2comjie/nbean v0.1.0
 	github.com/2comjie/ntool v0.1.4
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/dgraph-io/ristretto/v2 v2.4.2

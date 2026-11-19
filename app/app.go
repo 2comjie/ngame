@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/2comjie/ntool/logx"
+	"github.com/2comjie/nbean"
 )
 
 var (
@@ -12,21 +12,28 @@ var (
 	ErrClosed  = errors.New("app: 应用已经停止")
 )
 
+// App 按添加顺序管理组件，生命周期方法由调用方串行调用
 type App struct {
-	components []Component
-	started    int
-	running    bool
-	stopping   bool
+	beans             *nbean.Container
+	components        []Component
+	started           int
+	running           bool
+	stopping          bool
+	stoppingComponent bool
 }
 
 var _ Component = (*App)(nil)
 
 func New(components ...Component) *App {
-	a := &App{}
+	a := &App{beans: nbean.New()}
 	for _, component := range components {
 		a.AddComponent(component)
 	}
 	return a
+}
+
+func (a *App) Beans() *nbean.Container {
+	return a.beans
 }
 
 func (a *App) AddComponent(component Component) {
@@ -59,8 +66,8 @@ func (a *App) Start() error {
 	a.running = true
 	for _, component := range a.components {
 		if err := component.Start(); err != nil {
-			if cleanupErr := a.Shutdown(context.Background()); cleanupErr != nil {
-				logx.Errorf("app: 启动失败后清理组件失败 error=%v", cleanupErr)
+			if rollbackErr := a.Shutdown(context.Background()); rollbackErr != nil {
+				return errors.Join(err, rollbackErr)
 			}
 			return err
 		}
@@ -69,23 +76,29 @@ func (a *App) Start() error {
 	return nil
 }
 
-func (a *App) RequestStop() {
-	if a.stopping {
-		return
-	}
-	a.stopping = true
-	for index := a.started - 1; index >= 0; index-- {
-		a.components[index].RequestStop()
-	}
-}
+// RequestStop 标记应用停止，组件由 Shutdown 逐个关闭
+func (a *App) RequestStop() { a.stopping = true }
 
 func (a *App) Shutdown(ctx context.Context) error {
 	a.RequestStop()
 	var shutdownErr error
 	for a.started > 0 {
+		if err := ctx.Err(); err != nil {
+			return errors.Join(shutdownErr, err)
+		}
+		component := a.components[a.started-1]
+		if !a.stoppingComponent {
+			component.RequestStop()
+			a.stoppingComponent = true
+		}
+		if err := component.Shutdown(ctx); err != nil {
+			shutdownErr = errors.Join(shutdownErr, err)
+			if ctx.Err() != nil {
+				return shutdownErr
+			}
+		}
 		a.started--
-		// 一个组件释放失败也继续释放剩余组件，错误仅在本次调用链聚合返回。
-		shutdownErr = errors.Join(shutdownErr, a.components[a.started].Shutdown(ctx))
+		a.stoppingComponent = false
 	}
 	return shutdownErr
 }
