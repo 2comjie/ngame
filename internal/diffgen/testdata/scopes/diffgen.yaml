@@ -1,7 +1,0 @@
-source_root: .
-packages:
-  - ./model
-  - ./child
-proto:
-  dir: ./proto
-  go_out: .
