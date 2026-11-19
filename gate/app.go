@@ -30,16 +30,14 @@ type Config struct {
 	NetworkOptions []network.Option
 	Forward        ForwardFunc
 	ErrorHandler   ErrorHandler
-	Components     []app.Component
 	// StartupTimeout 限制注册操作及启动失败后的清理，默认各 5 秒
 	StartupTimeout time.Duration
 }
 
-// App 的生命周期方法由应用入口串行调用
+// App 是网关组件，由外层 app.App 管理生命周期
 // Context 取消表示已请求退出或服务失效，调用方应随后执行 Shutdown
 type App struct {
 	gatepb.UnimplementedGateServer
-	*app.App
 
 	host         *host.Host
 	server       *network.Server
@@ -65,7 +63,6 @@ func New(config Config) *App {
 	}
 	config.Instance.Id += "-" + rand.Text()
 	g := &App{
-		App: app.New(config.Components...),
 		host: host.New(host.Config{
 			Instance:       config.Instance,
 			Registry:       config.Registry,
@@ -116,9 +113,6 @@ func (g *App) Start() (err error) {
 			}
 		}
 	}()
-	if err = g.App.Start(); err != nil {
-		return err
-	}
 	if err = g.server.Start(); err != nil {
 		return err
 	}
@@ -130,7 +124,6 @@ func (g *App) Start() (err error) {
 func (g *App) RequestStop() {
 	g.host.RequestStop()
 	g.server.RequestStop()
-	g.App.RequestStop()
 }
 
 func (g *App) Shutdown(ctx context.Context) error {
@@ -152,9 +145,8 @@ func (g *App) Shutdown(ctx context.Context) error {
 	if sessionErr != nil || rpcErr != nil {
 		return errors.Join(unregisterErr, sessionErr, rpcErr)
 	}
-	componentErr := g.App.Shutdown(ctx)
-	g.closed = componentErr == nil || ctx.Err() == nil
-	return errors.Join(unregisterErr, componentErr)
+	g.closed = true
+	return unregisterErr
 }
 
 func (g *App) onReq(c *network.ReqContext) {

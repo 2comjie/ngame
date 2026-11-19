@@ -36,6 +36,7 @@ func (a *App) Beans() *nbean.Container {
 	return a.beans
 }
 
+// AddComponent 先添加依赖，再添加使用它的组件
 func (a *App) AddComponent(component Component) {
 	if component == nil {
 		panic("app: 必须提供 Component")

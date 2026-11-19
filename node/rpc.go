@@ -25,10 +25,10 @@ type RequestComponent struct {
 
 var _ app.Component = (*RequestComponent)(nil)
 
-// NewRequestComponent 在 App 构造后添加，随组件启动注册 RPC
+// NewRequestComponent 加入外层 App，启动顺序排在 Node 前面
 func NewRequestComponent(node *App, handler HandlerFunc) *RequestComponent {
 	if node == nil || handler == nil {
-		panic("node: 请求组件必须提供 App 和 Handler")
+		panic("node: 请求组件必须提供 Node 和 Handler")
 	}
 	return &RequestComponent{
 		node:    node,
