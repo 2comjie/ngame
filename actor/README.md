@@ -15,7 +15,7 @@ Ask/Tell。业务实体由上层创建，Loader 只负责加载已有实体。
 | `mailbox.go` | 投递、同步等待、消息执行和取消 |
 | `timer.go` | 定时任务、取消和调度堆 |
 | `guard.go` | Redis 归属抢占、续租和释放 |
-| `client.go` | Client、Ref、激活策略和远程调用 |
+| `rpc_ins.go` | Client、Ref、激活策略和远程调用 |
 | `locator.go` | 归属查询、本地缓存和刷新合并 |
 | `rpc.go` | Actor RPC 服务端适配 |
 
