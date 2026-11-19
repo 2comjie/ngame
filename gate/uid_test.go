@@ -27,7 +27,9 @@ import (
 
 type uidRegistry struct {
 	registry.Registry
-	instance endpoint.ServiceInst
+	instance     endpoint.ServiceInst
+	registration *uidRegistration
+	err          error
 }
 
 type uidRegistration struct {
@@ -36,9 +38,13 @@ type uidRegistration struct {
 	once sync.Once
 }
 
-func (r *uidRegistry) Register(ctx context.Context, instance endpoint.ServiceInst) (registry.Registration, error) {
+func (r *uidRegistry) Register(_ context.Context, instance endpoint.ServiceInst) (registry.Registration, error) {
 	r.instance = instance
-	return &uidRegistration{done: make(chan struct{})}, nil
+	if r.err != nil {
+		return nil, r.err
+	}
+	r.registration = &uidRegistration{done: make(chan struct{})}
+	return r.registration, nil
 }
 func (r *uidRegistration) Done() <-chan struct{} { return r.done }
 func (r *uidRegistration) Unregister(context.Context) error {
@@ -79,6 +85,15 @@ type uidGate struct {
 
 func newUidGate(t *testing.T, client *redis.Client, forward ForwardFunc) *uidGate {
 	t.Helper()
+	fixture := prepareUidGate(t, client, Config{Registry: &uidRegistry{}, Forward: forward})
+	if err := fixture.app.Start(); err != nil {
+		t.Fatal(err)
+	}
+	return fixture
+}
+
+func prepareUidGate(t *testing.T, client *redis.Client, config Config) *uidGate {
+	t.Helper()
 	listener, err := netTcp.Listen("127.0.0.1:0", netTcp.WithoutTLS())
 	if err != nil {
 		t.Fatal(err)
@@ -93,37 +108,32 @@ func newUidGate(t *testing.T, client *redis.Client, forward ForwardFunc) *uidGat
 		bound:   make(chan *network.Session, 16),
 		ended:   make(chan *network.Session, 16),
 	}
-	if forward == nil {
-		forward = func(context.Context, *Request) (*Response, error) {
+	if config.Forward == nil {
+		config.Forward = func(context.Context, *Request) (*Response, error) {
 			return &Response{Replied: true, Body: []byte("ok")}, nil
 		}
 	}
-	fixture.app = New(Config{
-		Instance: endpoint.ServiceInst{
-			Id:      "gate-01",
-			Name:    "gate",
-			RpcHost: "127.0.0.1",
-			RpcPort: rpcListener.Addr().(*net.TCPAddr).Port,
-			Weight:  1,
-		},
-		Registry: &uidRegistry{},
-		Binder: NewBinder(BinderConfig{
-			Redis:        client,
-			TTL:          3 * time.Second,
-			SyncInterval: 20 * time.Millisecond,
-		}),
-		RPCListener: rpcListener,
-		NetworkOptions: []network.Option{
-			network.WithListener(listener),
-			network.WithAuther(network.AuthFunc(func(context.Context, []byte) (uint64, error) { return 42, nil })),
-			network.OnSessionBind(func(s *network.Session) { fixture.bound <- s }),
-			network.OnSessionEnd(func(s *network.Session) { fixture.ended <- s }),
-		},
-		Forward: forward,
-		ErrorHandler: func(c *network.ReqContext, err error) {
-			t.Errorf("请求处理错误: %v", err)
-		},
+	config.Instance = endpoint.ServiceInst{
+		Id:      "gate-01",
+		Name:    "gate",
+		RpcHost: "127.0.0.1",
+		RpcPort: rpcListener.Addr().(*net.TCPAddr).Port,
+		Weight:  1,
+	}
+	config.Binder = NewBinder(BinderConfig{
+		Redis:        client,
+		TTL:          3 * time.Second,
+		SyncInterval: 20 * time.Millisecond,
 	})
+	config.RPCListener = rpcListener
+	config.NetworkOptions = append([]network.Option{
+		network.WithListener(listener),
+		network.WithAuther(network.AuthFunc(func(context.Context, []byte) (uint64, error) { return 42, nil })),
+		network.OnSessionBind(func(s *network.Session) { fixture.bound <- s }),
+		network.OnSessionEnd(func(s *network.Session) { fixture.ended <- s }),
+	}, config.NetworkOptions...)
+	config.ErrorHandler = func(_ *network.ReqContext, err error) { t.Errorf("请求处理错误: %v", err) }
+	fixture.app = New(config)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -131,9 +141,6 @@ func newUidGate(t *testing.T, client *redis.Client, forward ForwardFunc) *uidGat
 			t.Error(err)
 		}
 	})
-	if err := fixture.app.Start(); err != nil {
-		t.Fatal(err)
-	}
 	return fixture
 }
 

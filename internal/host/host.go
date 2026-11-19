@@ -139,8 +139,8 @@ func (h *Host) Unregister(ctx context.Context) error {
 	return h.registration.Unregister(ctx)
 }
 
-// ShutdownRPC 等待在途回调退出，超时后仍可继续等待
-func (h *Host) ShutdownRPC(ctx context.Context) error {
+// RequestRPCStop 停止接收新 RPC，让在途调用继续退出
+func (h *Host) RequestRPCStop() {
 	if h.rpcStopDone == nil {
 		h.rpcStopDone = make(chan struct{})
 		go func() {
@@ -149,6 +149,11 @@ func (h *Host) ShutdownRPC(ctx context.Context) error {
 			_ = h.rpcListener.Close()
 		}()
 	}
+}
+
+// ShutdownRPC 等待在途回调退出，超时后仍可继续等待
+func (h *Host) ShutdownRPC(ctx context.Context) error {
+	h.RequestRPCStop()
 	select {
 	case <-h.rpcStopDone:
 	case <-ctx.Done():

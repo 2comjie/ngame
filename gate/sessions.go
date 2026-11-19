@@ -17,9 +17,9 @@ func (g *App) onSessionBind(session *network.Session) error {
 	if g.server.Session(uid) != session {
 		return ErrSessionNotHere
 	}
-	ctx, cancel := context.WithTimeout(session.Context(), g.startupTimeout)
+	ctx, cancel := context.WithTimeout(session.Context(), g.host.StartupTimeout())
 	defer cancel()
-	if err := g.binder.Bind(ctx, uid, g.instance.Id); err != nil {
+	if err := g.binder.Bind(ctx, uid, g.InstanceId()); err != nil {
 		return err
 	}
 	if g.server.Session(uid) != session {
@@ -37,20 +37,22 @@ func (g *App) onSessionEnd(session *network.Session) {
 	if g.server.Session(uid) != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), g.startupTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), g.host.StartupTimeout())
 	defer cancel()
-	if err := g.binder.Unbind(ctx, uid, g.instance.Id); err != nil {
+	if err := g.binder.Unbind(ctx, uid, g.InstanceId()); err != nil {
 		logx.Warnf("gate: 解绑失败 uid=%d error=%v", uid, err)
 	}
 }
 
 func (g *App) syncSessions() {
 	defer close(g.syncDone)
+	ctx := g.Context()
+	gateId := g.InstanceId()
 	ticker := time.NewTicker(g.binder.syncInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-g.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
@@ -62,12 +64,12 @@ func (g *App) syncSessions() {
 		if len(uids) == 0 {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(g.ctx, g.binder.syncInterval)
-		lost, err := g.binder.renew(ctx, g.instance.Id, uids)
+		renewCtx, cancel := context.WithTimeout(ctx, g.binder.syncInterval)
+		lost, err := g.binder.renew(renewCtx, gateId, uids)
 		cancel()
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
-				logx.Warnf("gate: 批量同步会话失败 id=%s error=%v", g.instance.Id, err)
+				logx.Warnf("gate: 批量同步会话失败 id=%s error=%v", gateId, err)
 			}
 			continue
 		}

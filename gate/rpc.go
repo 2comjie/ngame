@@ -17,7 +17,7 @@ import (
 )
 
 func (g *App) Push(ctx context.Context, request *gatepb.PushRequest) (*gatepb.PushResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	if request.Uid == 0 {
@@ -53,7 +53,7 @@ func (g *App) Push(ctx context.Context, request *gatepb.PushRequest) (*gatepb.Pu
 }
 
 func (g *App) MultiPush(ctx context.Context, request *gatepb.MultiPushRequest) (*gatepb.MultiPushResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	if err := ctx.Err(); err != nil {
@@ -121,7 +121,7 @@ func (g *App) MultiPush(ctx context.Context, request *gatepb.MultiPushRequest) (
 }
 
 func (g *App) Broadcast(ctx context.Context, request *gatepb.BroadcastRequest) (*gatepb.BroadcastResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	message := &packet.Message{
@@ -146,7 +146,7 @@ func (g *App) Broadcast(ctx context.Context, request *gatepb.BroadcastRequest) (
 }
 
 func (g *App) Kick(ctx context.Context, request *gatepb.KickRequest) (*gatepb.KickResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	if err := ctx.Err(); err != nil {
@@ -170,7 +170,7 @@ func (g *App) Kick(ctx context.Context, request *gatepb.KickRequest) (*gatepb.Ki
 }
 
 func (g *App) MockCall(ctx context.Context, request *gatepb.MockCallRequest) (*gatepb.MockCallResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	if request.Uid == 0 {
@@ -189,7 +189,7 @@ func (g *App) MockCall(ctx context.Context, request *gatepb.MockCallRequest) (*g
 		var err error
 		response, err = g.forward(callCtx, &Request{
 			Uid:       session.Uid(),
-			GateId:    g.instance.Id,
+			GateId:    g.InstanceId(),
 			NeedReply: true,
 			Route:     message.Header.Route,
 			Values:    message.Header.Values,
@@ -218,7 +218,7 @@ func (g *App) MockCall(ctx context.Context, request *gatepb.MockCallRequest) (*g
 }
 
 func (g *App) SessionCount(ctx context.Context, _ *emptypb.Empty) (*gatepb.SessionCountResponse, error) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		return nil, status.Error(codes.Unavailable, "gate: 网关正在停止")
 	}
 	if err := ctx.Err(); err != nil {

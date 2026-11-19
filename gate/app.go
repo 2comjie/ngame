@@ -4,15 +4,14 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"maps"
 	"net"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/2comjie/ngame/app"
 	"github.com/2comjie/ngame/endpoint"
 	gatepb "github.com/2comjie/ngame/gate/protocol"
+	"github.com/2comjie/ngame/internal/host"
 	"github.com/2comjie/ngame/network"
 	"github.com/2comjie/ngame/packet"
 	"github.com/2comjie/ngame/registry"
@@ -22,7 +21,7 @@ import (
 )
 
 type Config struct {
-	// Instance.Id 是节点名前缀，实际实例 Id 每次构造时自动生成。
+	// Instance.Id 是节点名前缀，实际实例 Id 每次构造时自动生成
 	Instance       endpoint.ServiceInst
 	Registry       registry.Registry
 	Binder         *Binder
@@ -32,38 +31,25 @@ type Config struct {
 	Forward        ForwardFunc
 	ErrorHandler   ErrorHandler
 	Components     []app.Component
-	// StartupTimeout 限制注册操作及启动失败后的清理，默认各 5 秒。
+	// StartupTimeout 限制注册操作及启动失败后的清理，默认各 5 秒
 	StartupTimeout time.Duration
 }
 
-// App 的生命周期方法由应用入口串行调用。
-// Context 取消表示已请求退出或服务失效，调用方应随后执行 Shutdown。
+// App 的生命周期方法由应用入口串行调用
+// Context 取消表示已请求退出或服务失效，调用方应随后执行 Shutdown
 type App struct {
 	gatepb.UnimplementedGateServer
 	*app.App
 
-	instance        endpoint.ServiceInst
-	server          *network.Server
-	registry        registry.Registry
-	registration    registry.Registration
-	binder          *Binder
-	bindings        [256]sync.Mutex
-	syncStarted     bool
-	syncDone        chan struct{}
-	rpcServer       *grpc.Server
-	rpcListener     net.Listener
-	forward         ForwardFunc
-	errorHandler    ErrorHandler
-	startupTimeout  time.Duration
-	ctx             context.Context
-	cancel          context.CancelFunc
-	started         bool
-	closed          bool
-	stopping        atomic.Bool
-	rpcStarted      bool
-	rpcDone         chan struct{}
-	rpcStopDone     chan struct{}
-	rpcForceStopped bool
+	host         *host.Host
+	server       *network.Server
+	binder       *Binder
+	bindings     [256]sync.Mutex
+	syncDone     chan struct{}
+	forward      ForwardFunc
+	errorHandler ErrorHandler
+	started      bool
+	closed       bool
 }
 
 var _ app.Component = (*App)(nil)
@@ -71,35 +57,25 @@ var _ gatepb.GateServer = (*App)(nil)
 
 func New(config Config) *App {
 	config.Instance.Validate()
-	if config.Registry == nil || config.Binder == nil || config.RPCListener == nil {
-		panic("gate: 必须提供 Registry、Binder 和 RPCListener")
+	if config.Binder == nil {
+		panic("gate: 必须提供 Binder")
 	}
 	if config.Forward == nil || config.ErrorHandler == nil {
 		panic("gate: 必须提供 Forward 和 ErrorHandler")
 	}
-	if config.StartupTimeout == 0 {
-		config.StartupTimeout = 5 * time.Second
-	}
-	if config.StartupTimeout < 0 {
-		panic("gate: StartupTimeout 必须大于0")
-	}
-	config.Instance.Meta = maps.Clone(config.Instance.Meta)
 	config.Instance.Id += "-" + rand.Text()
-	ctx, cancel := context.WithCancel(context.Background())
 	g := &App{
-		App:            app.New(config.Components...),
-		instance:       config.Instance,
-		registry:       config.Registry,
-		binder:         config.Binder,
-		syncDone:       make(chan struct{}),
-		rpcServer:      rpc.NewServer(config.Instance.Id, config.RPCOptions...),
-		rpcListener:    config.RPCListener,
-		forward:        config.Forward,
-		errorHandler:   config.ErrorHandler,
-		startupTimeout: config.StartupTimeout,
-		ctx:            ctx,
-		cancel:         cancel,
-		rpcDone:        make(chan struct{}),
+		App: app.New(config.Components...),
+		host: host.New(host.Config{
+			Instance:       config.Instance,
+			Registry:       config.Registry,
+			RPCServer:      rpc.NewServer(config.Instance.Id, config.RPCOptions...),
+			RPCListener:    config.RPCListener,
+			StartupTimeout: config.StartupTimeout,
+		}),
+		binder:       config.Binder,
+		forward:      config.Forward,
+		errorHandler: config.ErrorHandler,
 	}
 	opts := []network.Option{
 		network.OnSessionEnd(g.onSessionEnd),
@@ -107,27 +83,24 @@ func New(config Config) *App {
 	opts = append(opts, config.NetworkOptions...)
 	opts = append(opts, network.BeforeSessionBind(g.onSessionBind), network.OnReq(g.onReq))
 	g.server = network.NewServer(opts...)
-	gatepb.RegisterGateServer(g.rpcServer, g)
+	context.AfterFunc(g.Context(), g.server.RequestStop)
+	gatepb.RegisterGateServer(g.RPCServer(), g)
 	return g
 }
 
 func (g *App) Network() *network.Server    { return g.server }
-func (g *App) Context() context.Context    { return g.ctx }
-func (g *App) InstanceId() string          { return g.instance.Id }
-func (g *App) Registry() registry.Registry { return g.registry }
+func (g *App) Context() context.Context    { return g.host.Context() }
+func (g *App) InstanceId() string          { return g.host.InstanceId() }
+func (g *App) Registry() registry.Registry { return g.host.Registry() }
 
 // RPCServer 供启动前注册业务 RPC
-func (g *App) RPCServer() *grpc.Server { return g.rpcServer }
+func (g *App) RPCServer() *grpc.Server { return g.host.RPCServer() }
 
 // Instance 返回包含实际进程 Id 的独立快照
-func (g *App) Instance() endpoint.ServiceInst {
-	instance := g.instance
-	instance.Meta = maps.Clone(instance.Meta)
-	return instance
-}
+func (g *App) Instance() endpoint.ServiceInst { return g.host.Instance() }
 
 func (g *App) Start() (err error) {
-	if g.stopping.Load() || g.closed {
+	if g.Context().Err() != nil {
 		return app.ErrClosed
 	}
 	if g.started {
@@ -136,58 +109,26 @@ func (g *App) Start() (err error) {
 	g.started = true
 	defer func() {
 		if err != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), g.startupTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), g.host.StartupTimeout())
 			defer cancel()
-			if cleanupErr := g.Shutdown(ctx); cleanupErr != nil {
-				logx.Errorf("gate: 启动失败后清理失败 error=%v", cleanupErr)
+			if rollbackErr := g.Shutdown(ctx); rollbackErr != nil {
+				err = errors.Join(err, rollbackErr)
 			}
 		}
 	}()
 	if err = g.App.Start(); err != nil {
 		return err
 	}
-	g.syncStarted = true
-	go g.syncSessions()
-	g.rpcStarted = true
-	go func() {
-		defer close(g.rpcDone)
-		if serveErr := g.rpcServer.Serve(g.rpcListener); serveErr != nil && !g.stopping.Load() {
-			logx.Errorf("gate: gRPC服务退出 error=%v", serveErr)
-			g.cancel()
-			g.server.RequestStop()
-		}
-	}()
 	if err = g.server.Start(); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, g.startupTimeout)
-	defer cancel()
-	if g.registration, err = g.registry.Register(ctx, g.instance); err != nil {
-		return err
-	}
-	if err = g.ctx.Err(); err != nil {
-		return err
-	}
-	registration := g.registration
-	go func() {
-		select {
-		case <-g.ctx.Done():
-		case <-registration.Done():
-			if g.ctx.Err() == nil {
-				logx.Warnf("gate: 注册已失效 id=%s", g.instance.Id)
-				g.cancel()
-				g.server.RequestStop()
-			}
-		}
-	}()
-	return nil
+	g.syncDone = make(chan struct{})
+	go g.syncSessions()
+	return g.host.Start()
 }
 
 func (g *App) RequestStop() {
-	if !g.stopping.CompareAndSwap(false, true) {
-		return
-	}
-	g.cancel()
+	g.host.RequestStop()
 	g.server.RequestStop()
 	g.App.RequestStop()
 }
@@ -197,65 +138,33 @@ func (g *App) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	g.RequestStop()
-	var shutdownErr error
-	if g.registration != nil {
-		shutdownErr = g.registration.Unregister(ctx)
-	}
-	if err := g.server.Shutdown(ctx); err != nil {
-		g.forceStopRPC()
-		return errors.Join(shutdownErr, err)
-	}
-	if g.syncStarted {
+	unregisterErr := g.host.Unregister(ctx)
+	g.host.RequestRPCStop()
+	sessionErr := g.server.Shutdown(ctx)
+	if sessionErr == nil && g.syncDone != nil {
 		select {
 		case <-g.syncDone:
 		case <-ctx.Done():
-			g.forceStopRPC()
-			return errors.Join(shutdownErr, ctx.Err())
+			sessionErr = ctx.Err()
 		}
 	}
-	if g.rpcStopDone == nil {
-		g.rpcStopDone = make(chan struct{})
-		go func() {
-			defer close(g.rpcStopDone)
-			g.rpcServer.GracefulStop()
-		}()
+	rpcErr := g.host.ShutdownRPC(ctx)
+	if sessionErr != nil || rpcErr != nil {
+		return errors.Join(unregisterErr, sessionErr, rpcErr)
 	}
-	select {
-	case <-g.rpcStopDone:
-	case <-ctx.Done():
-		g.forceStopRPC()
-		return errors.Join(shutdownErr, ctx.Err())
-	}
-	_ = g.rpcListener.Close()
-	if g.rpcStarted {
-		select {
-		case <-g.rpcDone:
-		case <-ctx.Done():
-			return errors.Join(shutdownErr, ctx.Err())
-		}
-	}
-	shutdownErr = errors.Join(shutdownErr, g.App.Shutdown(ctx))
-	g.closed = true
-	return shutdownErr
-}
-
-func (g *App) forceStopRPC() {
-	if !g.rpcForceStopped {
-		g.rpcForceStopped = true
-		// GracefulStop 或 WaitForHandlers 可能仍在等待回调，不阻塞退出期限。
-		go g.rpcServer.Stop()
-	}
-	_ = g.rpcListener.Close()
+	componentErr := g.App.Shutdown(ctx)
+	g.closed = componentErr == nil || ctx.Err() == nil
+	return errors.Join(unregisterErr, componentErr)
 }
 
 func (g *App) onReq(c *network.ReqContext) {
-	if g.ctx.Err() != nil {
+	if g.Context().Err() != nil {
 		_ = c.Session.Conn.Close()
 		return
 	}
 	response, err := g.forward(c.Context, &Request{
 		Uid:       c.Session.Uid(),
-		GateId:    g.instance.Id,
+		GateId:    g.InstanceId(),
 		NeedReply: c.NeedReply(),
 		Route:     c.Request.Header.Route,
 		Values:    c.Request.Header.Values,
