@@ -45,8 +45,8 @@ func (*RequestComponent) RequestStop()                   {}
 func (*RequestComponent) Shutdown(context.Context) error { return nil }
 
 func (r *RequestComponent) Call(ctx context.Context, request *nodepb.CallRequest) (*nodepb.CallResponse, error) {
-	n := r.node
-	if n.ctx.Err() != nil {
+	nodeCtx := r.node.Context()
+	if nodeCtx.Err() != nil {
 		return nil, status.Error(codes.Unavailable, "node: 节点正在停止")
 	}
 	if err := ctx.Err(); err != nil {
@@ -61,7 +61,7 @@ func (r *RequestComponent) Call(ctx context.Context, request *nodepb.CallRequest
 		}
 	}
 	callCtx, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(n.ctx, cancel)
+	stop := context.AfterFunc(nodeCtx, cancel)
 	defer stop()
 	defer cancel()
 	if err := callCtx.Err(); err != nil {
